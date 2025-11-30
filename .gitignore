@@ -1,5 +1,8 @@
-#GSViT -- can be downloaded from https://github.com/SamuelSchmidgall/GSViT?tab=readme-ov-file
+# GSViT -- can be downloaded from https://github.com/SamuelSchmidgall/GSViT?tab=readme-ov-file
 GSViT.pkl 
+
+# patient data
+Images/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
