@@ -1,5 +1,7 @@
 # Tumor Classification Pipeline Walkthrough
 
+**<span style="color:red;">Note: The code in the `legacy` subdirectory was used for the generation of the manuscript data.</span>** Code in the root directory is represents a refactored version of the code in the `legacy` subdirectory, developed for simplified pipeline usage/recreation. 
+
 ## Overview
 
 The pipeline consists of the following components:
