@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
+import random
 
 from preprocess import preprocess_images, create_splits
 from dataset import TumorDataset, get_transforms
@@ -12,11 +13,23 @@ from gsvit_model import get_gsvit_model
 from train import train_model
 from evaluate import evaluate_model
 
+def set_seed(seed=42):
+    """Sets the seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def main():
+    set_seed(42)
     parser = argparse.ArgumentParser(description='Tumor Classification Pipeline')
     parser.add_argument('--mode', type=str, choices=['preprocess', 'train', 'evaluate', 'dry_run'], required=True, help='Pipeline mode')
     parser.add_argument('--model_type', type=str, choices=['resnet', 'gsvit'], default='resnet', help='Model architecture')
-    parser.add_argument('--data_dir', type=str, default='data/raw', help='Path to raw data')
+    parser.add_argument('--data_dir', type=str, default='Images', help='Path to raw data')
     parser.add_argument('--processed_dir', type=str, default='data/processed', help='Path to processed data')
     parser.add_argument('--metadata_csv', type=str, default='data/metadata.csv', help='Path to metadata CSV')
     parser.add_argument('--gsvit_path', type=str, default='GSViT.pkl', help='Path to GSViT pickle file')
