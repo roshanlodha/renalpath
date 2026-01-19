@@ -2,7 +2,7 @@
 models/*
 
 # patient data
-Images/*
+data/*
 
 # macos files
 .DS_Store
