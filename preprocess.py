@@ -14,6 +14,18 @@ def preprocess_images(raw_data_dir, output_dir, metadata_csv):
     os.makedirs(output_dir, exist_ok=True)
     
     df = pd.read_csv(metadata_csv)
+    
+    # Caching check
+    train_split_path = os.path.join(output_dir, 'train_split.csv')
+    val_split_path = os.path.join(output_dir, 'val_split.csv')
+    test_split_path = os.path.join(output_dir, 'test_split.csv')
+    classes_path = os.path.join(output_dir, 'classes.npy')
+    
+    if os.path.exists(train_split_path) and os.path.exists(val_split_path) and \
+       os.path.exists(test_split_path) and os.path.exists(classes_path):
+        print(f"Processed data found in {output_dir}. Skipping preprocessing.")
+        return df # Return df just to satisfy contract, though creates_splits won't need it if we skip
+    
     valid_data = []
     
     print("Preprocessing images...")

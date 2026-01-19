@@ -1,8 +1,11 @@
-# GSViT -- can be downloaded from https://github.com/SamuelSchmidgall/GSViT?tab=readme-ov-file
+# GSViT and saved files (LFS)
 models/*
 
 # patient data
 data/*
+
+# output files
+analysis/* 
 
 # macos files
 .DS_Store

@@ -72,7 +72,12 @@ def main():
 
     if args.mode == 'preprocess':
         df = preprocess_images(args.data_dir, args.processed_dir, args.metadata_csv)
-        create_splits(df, args.processed_dir)
+        # Check if splits already exist (preprocess_images returns early)
+        train_split = os.path.join(args.processed_dir, 'train_split.csv')
+        if os.path.exists(train_split):
+             print("Splits already exist. Skipping split creation.")
+        else:
+             create_splits(df, args.processed_dir)
         return
 
     # Load classes
@@ -94,6 +99,12 @@ def main():
         is_gsvit = True
         
     if args.mode == 'train':
+        # Caching: Check if training is needed
+        best_model_path = os.path.join(args.output_dir, f'best_{args.model_type}.pth')
+        if os.path.exists(best_model_path):
+             print(f"Trained model found at {best_model_path}. Skipping training.")
+             return
+
         # Datasets
         train_csv = os.path.join(args.processed_dir, 'train_split.csv')
         val_csv = os.path.join(args.processed_dir, 'val_split.csv')
@@ -134,9 +145,15 @@ def main():
         
         # Load best model
         model_path = os.path.join(args.output_dir, f'best_{args.model_type}.pth')
+        if not os.path.exists(model_path):
+             print(f"Model file not found at {model_path}. Please train first.")
+             return
+
         model.load_state_dict(torch.load(model_path, map_location=device))
         
-        evaluate_model(model, dataloader, device, num_classes=num_classes, class_names=class_names, output_dir=args.output_dir)
+        # Output analysis to a separate folder
+        analysis_dir = 'analysis'
+        evaluate_model(model, dataloader, device, num_classes=num_classes, class_names=class_names, output_dir=analysis_dir, model_name=model_name_str)
 
 if __name__ == "__main__":
     main()

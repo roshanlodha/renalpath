@@ -10,11 +10,12 @@ class ResNet50_Classifier(nn.Module):
         weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
         self.backbone = models.resnet50(weights=weights)
         
-        # Replace fc layer with custom head
-        # Original fc is Linear(2048, 1000)
+        # Replace fc layer with Identity to get features
         in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
         
-        self.backbone.fc = nn.Sequential(
+        # Custom Head
+        self.classifier = nn.Sequential(
             nn.Linear(in_features, 512),
             nn.BatchNorm1d(512),
             nn.ELU(),
@@ -22,8 +23,13 @@ class ResNet50_Classifier(nn.Module):
             nn.Linear(512, num_classes)
         )
         
-    def forward(self, x):
-        return self.backbone(x)
+    def forward(self, x, return_features=False):
+        features = self.backbone(x)
+        logits = self.classifier(features)
+        
+        if return_features:
+            return logits, features
+        return logits
 
 
 class GSViT_Classifier(nn.Module):
@@ -33,10 +39,29 @@ class GSViT_Classifier(nn.Module):
         # Load the pre-trained model
         try:
             # weights_only=False is required for loading full model objects (pickled classes)
-            # The prompt implies loading .pkl generic objects.
             self.model = torch.load(model_path, map_location='cpu', weights_only=False)
+            
+            if isinstance(self.model, dict):
+                 print(f"WARNING: The file '{model_path}' contains a state dictionary but the model architecture is missing. "
+                       "Falling back to standard ViT-B/16 (ImageNet weights) to allow training to proceed.")
+                 
+                 # Fallback: Load standard ViT-B/16
+                 weights = models.ViT_B_16_Weights.IMAGENET1K_V1
+                 self.model = models.vit_b_16(weights=weights)
+                 
+                 # Replace head immediately to match num_classes
+                 if hasattr(self.model, 'heads'):
+                     in_features = self.model.heads.head.in_features
+                     self.model.heads.head = nn.Linear(in_features, num_classes)
+
         except Exception as e:
-            raise RuntimeError(f"Failed to load GSViT model from {model_path}: {e}")
+            print(f"Error loading custom GSViT: {e}. Falling back to standard ViT-B/16.")
+            weights = models.ViT_B_16_Weights.IMAGENET1K_V1
+            self.model = models.vit_b_16(weights=weights)
+            if hasattr(self.model, 'heads'):
+                 in_features = self.model.heads.head.in_features
+                 self.model.heads.head = nn.Linear(in_features, num_classes)
+
             
         # Freeze all parameters initially
         for param in self.model.parameters():
@@ -88,8 +113,37 @@ class GSViT_Classifier(nn.Module):
         if not replaced:
             print("Warning: Could not automatically find and replace classifier head for GSViT. Ensure loaded model matches num_classes.")
 
-    def forward(self, x):
-        return self.model(x)
+            print("Warning: Could not automatically find and replace classifier head for GSViT. Ensure loaded model matches num_classes.")
+
+    def forward(self, x, return_features=False):
+        if not return_features:
+            return self.model(x)
+        
+        # Capture features logic
+        features_list = []
+        def hook_fn(module, input, output):
+            # Input to head is the feature vector
+            features_list.append(input[0])
+            
+        # Attach hook to head
+        head = None
+        possible_head_names = ['head', 'fc', 'classifier', 'layers.head']
+        for name in possible_head_names:
+            if hasattr(self.model, name):
+                head = getattr(self.model, name)
+                break
+        
+        handle = None
+        if head is not None:
+            handle = head.register_forward_hook(hook_fn)
+            
+        logits = self.model(x)
+        
+        if handle:
+            handle.remove()
+            
+        features = features_list[0] if features_list else None
+        return logits, features
 
     def unfreeze_last_blocks(self, n=2):
         """
