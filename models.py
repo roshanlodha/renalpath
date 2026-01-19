@@ -90,25 +90,33 @@ class GSViT_Classifier(nn.Module):
         possible_head_names = ['head', 'fc', 'classifier', 'layers.head']
         
         replaced = False
-        for name in possible_head_names:
-            if hasattr(self.model, name):
-                module = getattr(self.model, name)
-                if isinstance(module, nn.Linear):
-                    # Replace
-                    in_features = module.in_features
-                    new_head = nn.Linear(in_features, num_classes)
-                    setattr(self.model, name, new_head)
-                    replaced = True
-                    break
-                elif isinstance(module, nn.Sequential):
-                    # Check last layer of sequential
-                     if isinstance(module[-1], nn.Linear):
-                        in_features = module[-1].in_features
-                        # Replace just the last linear, or the whole sequential?
-                        # Let's replace the last linear
-                        module[-1] = nn.Linear(in_features, num_classes)
+        if hasattr(self.model, 'heads'):
+             # torchvision ViT specific
+             if hasattr(self.model.heads, 'head') and isinstance(self.model.heads.head, nn.Linear):
+                 in_features = self.model.heads.head.in_features
+                 self.model.heads.head = nn.Linear(in_features, num_classes)
+                 replaced = True
+
+        if not replaced:
+            for name in possible_head_names:
+                if hasattr(self.model, name):
+                    module = getattr(self.model, name)
+                    if isinstance(module, nn.Linear):
+                        # Replace
+                        in_features = module.in_features
+                        new_head = nn.Linear(in_features, num_classes)
+                        setattr(self.model, name, new_head)
                         replaced = True
                         break
+                    elif isinstance(module, nn.Sequential):
+                        # Check last layer of sequential
+                         if isinstance(module[-1], nn.Linear):
+                            in_features = module[-1].in_features
+                            # Replace just the last linear, or the whole sequential?
+                            # Let's replace the last linear
+                            module[-1] = nn.Linear(in_features, num_classes)
+                            replaced = True
+                            break
         
         if not replaced:
             print("Warning: Could not automatically find and replace classifier head for GSViT. Ensure loaded model matches num_classes.")
