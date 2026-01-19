@@ -10,8 +10,9 @@ from preprocess import preprocess_images, create_splits
 from dataset import TumorDataset, get_transforms
 from resnet_model import get_resnet_model
 from gsvit_model import get_gsvit_model
-from train import train_model
+from train import train_model, get_weighted_dataloader
 from evaluate import evaluate_model
+from loss import FocalLoss
 
 def set_seed(seed=42):
     """Sets the seed for reproducibility."""
@@ -32,8 +33,8 @@ def main():
     parser.add_argument('--data_dir', type=str, default='Images', help='Path to raw data')
     parser.add_argument('--processed_dir', type=str, default='data/processed', help='Path to processed data')
     parser.add_argument('--metadata_csv', type=str, default='data/metadata.csv', help='Path to metadata CSV')
-    parser.add_argument('--gsvit_path', type=str, default='GSViT.pkl', help='Path to GSViT pickle file')
-    parser.add_argument('--output_dir', type=str, default='output', help='Directory to save outputs')
+    parser.add_argument('--gsvit_path', type=str, default='models/GSViT.pkl', help='Path to GSViT pickle file')
+    parser.add_argument('--output_dir', type=str, default='models', help='Directory to save outputs')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--epochs', type=int, default=30, help='Number of epochs')
     
@@ -98,20 +99,25 @@ def main():
         train_dataset = TumorDataset(train_csv, transform=get_transforms('train', is_gsvit), is_gsvit=is_gsvit)
         val_dataset = TumorDataset(val_csv, transform=get_transforms('val', is_gsvit), is_gsvit=is_gsvit)
         
+        # Use WeightedRandomSampler for training
+        train_loader = get_weighted_dataloader(train_dataset, batch_size=args.batch_size, num_classes=num_classes, num_workers=4)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+        
         dataloaders = {
-            'train': DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4),
-            'val': DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+            'train': train_loader,
+            'val': val_loader
         }
         
-        # Calculate class weights
-        # "weights were set based on the inverse class frequency in the training data"
-        labels = train_dataset.data['label_encoded'].values
-        class_counts = np.bincount(labels, minlength=num_classes)
-        total_samples = len(labels)
-        class_weights = torch.tensor(total_samples / (num_classes * class_counts), dtype=torch.float)
-        print(f"Class weights: {class_weights}")
+        # Loss: FocalLoss with alpha=1
+        # The prompt asked for "FocalLoss class manually... -(alpha * (1 - pt)^gamma * log(pt))"
+        # We can pass alpha if we want class weighting there too, or just 1.0. 
+        # Using 1.0 based on "Formula: -(alpha...)" without specifying dynamic alpha calc, 
+        # plus we are using WeightedRandomSampler which balances sampling already.
+        # Balancing BOTH sampling AND loss weights is usually redundant/harmful.
+        # Since Sampler is requested explicitly for balancing, we stick to FocalLoss for hard examples (gamma).
+        criterion = FocalLoss(alpha=1, gamma=2.0)
         
-        model, history = train_model(model, dataloaders, device, num_epochs=args.epochs, class_weights=class_weights)
+        model, history = train_model(model, dataloaders, device, num_epochs=args.epochs, criterion=criterion)
         
         # Save model
         os.makedirs(args.output_dir, exist_ok=True)

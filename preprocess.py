@@ -4,8 +4,6 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import LabelEncoder
-import shutil
-from pathlib import Path
 from tqdm import tqdm
 
 def preprocess_images(raw_data_dir, output_dir, metadata_csv):
@@ -15,26 +13,29 @@ def preprocess_images(raw_data_dir, output_dir, metadata_csv):
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # Load metadata
-    # Assuming metadata_csv has 'patient_id', 'image_name', 'tumor_class'
     df = pd.read_csv(metadata_csv)
-    
     valid_data = []
     
     print("Preprocessing images...")
     for idx, row in tqdm(df.iterrows(), total=len(df)):
-        img_path = os.path.join(raw_data_dir, row['patient_id'], row['image_name'])
+        # Construct path - Assuming structure is raw_dir/Images/image_name based on metadata
+        # Previous analysis showed metadata has 'img_path' column which likely includes 'Images/filename'
+        # Let's check metadata columns again. 
+        # Metadata columns: Patient ID,Image ID,Date,Class,img_path ("Images/0002...")
         
-        if not os.path.exists(img_path):
+        # If img_path is relative to root, and raw_data_dir is root...
+        img_full_path = os.path.join(raw_data_dir, row['img_path'])
+        
+        if not os.path.exists(img_full_path):
+            # Try alternative if raw_data_dir points to 'Images' parent
+            # If raw_data_dir is just the root, and img_path is 'Images/...', it works.
             continue
             
-        # Load image
-        img = cv2.imread(img_path)
+        img = cv2.imread(img_full_path)
         if img is None:
             continue
             
-        # Thresholding heuristic
-        # "mean pixel intensity below 20 and standard deviation below 10 was considered black"
+        # Thresholding: "mean pixel intensity below 20 and std below 10 was considered black"
         if img.mean() < 20 and img.std() < 10:
             continue
             
@@ -45,82 +46,97 @@ def preprocess_images(raw_data_dir, output_dir, metadata_csv):
         img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
         
         # Save standardized image
-        # Maintaining patient structure or flat? "saved for downstream modeling"
-        # Let's save in a flat structure or patient structure in output_dir
-        save_subdir = os.path.join(output_dir, row['patient_id'])
+        # Saving in output_dir/patient_id ensures we organize well, but metadata has full control.
+        # Let's flatten or mimic structure. The legacy code flattened into patient folders.
+        # Metadata row has 'Patient ID'.
+        patient_id = str(row['Patient ID'])
+        save_subdir = os.path.join(output_dir, patient_id)
         os.makedirs(save_subdir, exist_ok=True)
-        save_path = os.path.join(save_subdir, row['image_name'])
         
-        # Save as RGB? cv2.imwrite expects BGR. 
-        # "converted to RGB format. These standardized images were then saved"
-        # If we save with cv2.imwrite, we should convert back to BGR or use PIL.
-        # Let's use cv2 and convert back to BGR for saving to ensure consistency.
+        # Extract filename
+        fname = os.path.basename(row['img_path'])
+        save_path = os.path.join(save_subdir, fname)
+        
+        # Save back as BGR for consistency if reading with cv2 later, or RGB if PIL.
+        # dataset.py uses cv2.imread (BGR) then converts to RGB.
+        # So saving as BGR is safest for cv2.imread compatibility.
         cv2.imwrite(save_path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
         
         valid_data.append({
-            'path': save_path,
-            'patient_id': row['patient_id'],
-            'label': row['tumor_class']
+            'img_path': os.path.join(patient_id, fname), # Relative to output_dir
+            'Patient ID': patient_id,
+            'Class': row['Class']
         })
         
     return pd.DataFrame(valid_data)
 
 def create_splits(df, output_dir):
     """
-    Performs patient-level stratified split (80/10/10) and saves split CSVs.
+    Performs patient-level stratified split (80/10/10) using StratifiedGroupKFold.
     """
-    # Encode labels
     le = LabelEncoder()
-    df['label_encoded'] = le.fit_transform(df['label'])
+    df['label_encoded'] = le.fit_transform(df['Class'])
     
-    # Save label mapping
     label_map = dict(zip(le.classes_, le.transform(le.classes_)))
     print(f"Label Mapping: {label_map}")
     
-    # Split: Train (80%), Val (10%), Test (10%)
-    # We use StratifiedGroupKFold to ensure patient separation and stratified labels
-    # First split: Train (80%) vs Temp (20%)
-    sgkf = StratifiedGroupKFold(n_splits=5) # 1/5 = 20% for test+val
+    # StratifiedGroupKFold
+    # We need 80% Train, 10% Val, 10% Test.
+    # Step 1: 5 splits -> 20% each. Take 1 fold as Temp (20%), rest as Train (80%).
+    sgkf = StratifiedGroupKFold(n_splits=5)
     
     df['split'] = 'train'
     
-    # Get one fold for temp (val + test)
-    for train_idx, temp_idx in sgkf.split(df, df['label_encoded'], groups=df['patient_id']):
+    # Groups must be patient IDs
+    groups = df['Patient ID']
+    y = df['label_encoded']
+    
+    for train_idx, temp_idx in sgkf.split(df, y, groups=groups):
         df.loc[temp_idx, 'split'] = 'temp'
         break
         
-    # Split Temp (20%) into Val (10%) and Test (10%) -> 50/50 split of temp
-    df_temp = df[df['split'] == 'temp']
-    sgkf_val = StratifiedGroupKFold(n_splits=2)
+    # Step 2: Split Temp (20%) into Val (10%) and Test (10%) -> 50/50 split
+    df_temp = df[df['split'] == 'temp'].copy()
     
-    for val_idx, test_idx in sgkf_val.split(df_temp, df_temp['label_encoded'], groups=df_temp['patient_id']):
-        # Map back to original indices
-        val_original_idx = df_temp.iloc[val_idx].index
-        test_original_idx = df_temp.iloc[test_idx].index
+    if len(df_temp) > 0:
+        sgkf_val = StratifiedGroupKFold(n_splits=2)
         
-        df.loc[val_original_idx, 'split'] = 'val'
-        df.loc[test_original_idx, 'split'] = 'test'
-        break
-        
+        # Reset index for split to return correct relative indices, or use logic
+        # Easier to use index map
+        for val_idx, test_idx in sgkf_val.split(df_temp, df_temp['label_encoded'], groups=df_temp['Patient ID']):
+            # val_idx are integer indices into df_temp
+            val_indices = df_temp.iloc[val_idx].index
+            test_indices = df_temp.iloc[test_idx].index
+            
+            df.loc[val_indices, 'split'] = 'val'
+            df.loc[test_indices, 'split'] = 'test'
+            break
+    
     # Save splits
     train_df = df[df['split'] == 'train']
     val_df = df[df['split'] == 'val']
     test_df = df[df['split'] == 'test']
     
-    print(f"Train size: {len(train_df)}, Val size: {len(val_df)}, Test size: {len(test_df)}")
+    print(f"Train size: {len(train_df)}")
+    print(f"Val size: {len(val_df)}")
+    print(f"Test size: {len(test_df)}")
+    
+    # Verify group independence
+    train_patients = set(train_df['Patient ID'])
+    val_patients = set(val_df['Patient ID'])
+    test_patients = set(test_df['Patient ID'])
+    
+    intersect_tv = train_patients.intersection(val_patients)
+    intersect_tt = train_patients.intersection(test_patients)
+    intersect_vt = val_patients.intersection(test_patients)
+    
+    if intersect_tv or intersect_tt or intersect_vt:
+        print("WARNING: Patient leakage detected!")
+    else:
+        print("Patient independence verified.")
     
     train_df.to_csv(os.path.join(output_dir, 'train_split.csv'), index=False)
     val_df.to_csv(os.path.join(output_dir, 'val_split.csv'), index=False)
     test_df.to_csv(os.path.join(output_dir, 'test_split.csv'), index=False)
     
-    # Save label encoder classes
     np.save(os.path.join(output_dir, 'classes.npy'), le.classes_)
-
-if __name__ == "__main__":
-    # Example usage (commented out as paths are not real)
-    # raw_dir = "path/to/raw_images"
-    # out_dir = "path/to/processed_images"
-    # meta_csv = "path/to/metadata.csv"
-    # df = preprocess_images(raw_dir, out_dir, meta_csv)
-    # create_splits(df, out_dir)
-    pass

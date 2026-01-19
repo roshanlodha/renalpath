@@ -1,5 +1,5 @@
 # GSViT -- can be downloaded from https://github.com/SamuelSchmidgall/GSViT?tab=readme-ov-file
-GSViT.pkl 
+models/*
 
 # patient data
 Images/*
