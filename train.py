@@ -125,10 +125,12 @@ def train_model_full(model, dataloaders, device, num_epochs=30, patience=10, cri
                 
             running_loss = 0.0
             running_corrects = 0
+            running_samples = 0
             
             for inputs, labels in tqdm(dataloaders[phase], desc=phase):
                 inputs = inputs.to(device)
                 labels = labels.to(device)
+                batch_size = inputs.size(0)
                 
                 optimizer.zero_grad()
                 
@@ -142,14 +144,19 @@ def train_model_full(model, dataloaders, device, num_epochs=30, patience=10, cri
                         loss.backward()
                         optimizer.step()
                 
-                running_loss += loss.item() * inputs.size(0)
+                running_loss += loss.item() * batch_size
                 running_corrects += torch.sum(preds == labels.data)
+                running_samples += batch_size
             
             if phase == 'train':
                 scheduler.step()
                 
-            epoch_loss = running_loss / len(dataloaders[phase].dataset)
-            epoch_acc = running_corrects.double() / len(dataloaders[phase].dataset)
+            if running_samples == 0:
+                epoch_loss = 0.0
+                epoch_acc = torch.tensor(0.0, device=device)
+            else:
+                epoch_loss = running_loss / running_samples
+                epoch_acc = running_corrects.double() / running_samples
             
             print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
             

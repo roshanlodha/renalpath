@@ -97,16 +97,24 @@ def evaluate_model(
     
     # --- Plot 1: Confusion Matrix ---
     cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=class_names,
-                yticklabels=class_names)
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.title(f'Confusion Matrix ({model_name})')
+    fig, ax = plt.subplots(figsize=(12, 9))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt='d',
+        cmap='Blues',
+        xticklabels=class_names,
+        yticklabels=class_names,
+        ax=ax,
+    )
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('True')
+    ax.set_title(f'Confusion Matrix ({model_name})')
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', rotation_mode='anchor')
+    fig.tight_layout()
     cm_path = os.path.join(output_dir, 'confusion.png')
-    plt.savefig(cm_path)
-    plt.close()
+    fig.savefig(cm_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
     print(f"Saved Confusion Matrix to {cm_path}")
     
     # --- Plot 2: AUPRC Bar Plot ---
