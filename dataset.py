@@ -15,7 +15,7 @@ class TumorDataset(Dataset):
             root_dir (string): Directory with all the images.
             transform (callable, optional): Optional transform to be applied on a sample.
             mode (string): 'train' or 'val'/'test'.
-            model_name (string): 'resnet' or 'gsvit'.
+            model_name (string): 'resnet', 'vit', or 'gsvit'.
         """
         self.data = pd.read_csv(csv_file)
         self.root_dir = root_dir
@@ -70,7 +70,7 @@ class TumorDataset(Dataset):
         # 3. Padding & Center Crop logic
         # If image < 1024, pad first. Then CenterCrop(1024).
         w, h = image_pil.size
-        target_size = 1024
+        target_size = 224*4
         
         pad_w = max(0, target_size - w)
         pad_h = max(0, target_size - h)

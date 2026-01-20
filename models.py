@@ -32,35 +32,58 @@ class ResNet50_Classifier(nn.Module):
         return logits
 
 
+class ViT_Classifier(nn.Module):
+    def __init__(self, num_classes=5, pretrained=True, freeze_backbone=True):
+        super(ViT_Classifier, self).__init__()
+
+        weights = models.ViT_B_16_Weights.IMAGENET1K_V1 if pretrained else None
+        self.model = models.vit_b_16(weights=weights)
+
+        if hasattr(self.model, "heads") and hasattr(self.model.heads, "head") and isinstance(self.model.heads.head, nn.Linear):
+            in_features = self.model.heads.head.in_features
+            self.model.heads.head = nn.Linear(in_features, num_classes)
+        else:
+            raise RuntimeError("Unexpected ViT head structure; cannot replace classifier head.")
+
+        if freeze_backbone:
+            for param in self.model.parameters():
+                param.requires_grad = False
+            for param in self.model.heads.parameters():
+                param.requires_grad = True
+
+    def forward(self, x, return_features=False):
+        if not return_features:
+            return self.model(x)
+
+        if not hasattr(self.model, "forward_features"):
+            raise RuntimeError("ViT model does not expose forward_features; cannot return features.")
+
+        features = self.model.forward_features(x)
+        if isinstance(features, (tuple, list)):
+            features = features[0]
+        if hasattr(features, "dim") and features.dim() == 3:
+            features = features[:, 0]
+
+        logits = self.model.heads(features)
+        return logits, features
+
+
 class GSViT_Classifier(nn.Module):
     def __init__(self, model_path, num_classes=5):
         super(GSViT_Classifier, self).__init__()
+        self.num_classes = num_classes
         
-        # Load the pre-trained model
+        # Load the pre-trained model (no ViT fallback; ViT is a separate model_type)
         try:
-            # weights_only=False is required for loading full model objects (pickled classes)
             self.model = torch.load(model_path, map_location='cpu', weights_only=False)
-            
-            if isinstance(self.model, dict):
-                 print(f"WARNING: The file '{model_path}' contains a state dictionary but the model architecture is missing. "
-                       "Falling back to standard ViT-B/16 (ImageNet weights) to allow training to proceed.")
-                 
-                 # Fallback: Load standard ViT-B/16
-                 weights = models.ViT_B_16_Weights.IMAGENET1K_V1
-                 self.model = models.vit_b_16(weights=weights)
-                 
-                 # Replace head immediately to match num_classes
-                 if hasattr(self.model, 'heads'):
-                     in_features = self.model.heads.head.in_features
-                     self.model.heads.head = nn.Linear(in_features, num_classes)
-
         except Exception as e:
-            print(f"Error loading custom GSViT: {e}. Falling back to standard ViT-B/16.")
-            weights = models.ViT_B_16_Weights.IMAGENET1K_V1
-            self.model = models.vit_b_16(weights=weights)
-            if hasattr(self.model, 'heads'):
-                 in_features = self.model.heads.head.in_features
-                 self.model.heads.head = nn.Linear(in_features, num_classes)
+            raise RuntimeError(f"Error loading GSViT model from '{model_path}': {e}") from e
+
+        if isinstance(self.model, dict):
+            raise ValueError(
+                f"The file '{model_path}' appears to contain a state_dict, but the GSViT model architecture is missing. "
+                "Provide a pickled GSViT model object instead."
+            )
 
             
         # Freeze all parameters initially
@@ -84,44 +107,68 @@ class GSViT_Classifier(nn.Module):
         
         self._replace_head_if_needed(num_classes)
 
+    def _get_module_by_path(self, root, path):
+        obj = root
+        for part in path.split('.'):
+            if not hasattr(obj, part):
+                return None
+            obj = getattr(obj, part)
+        return obj
 
     def _replace_head_if_needed(self, num_classes):
         # Heuristic to find and replace head
-        possible_head_names = ['head', 'fc', 'classifier', 'layers.head']
+        possible_head_names = ['heads.head', 'head', 'fc', 'classifier', 'layers.head']
         
         replaced = False
-        if hasattr(self.model, 'heads'):
-             # torchvision ViT specific
-             if hasattr(self.model.heads, 'head') and isinstance(self.model.heads.head, nn.Linear):
-                 in_features = self.model.heads.head.in_features
-                 self.model.heads.head = nn.Linear(in_features, num_classes)
-                 replaced = True
+        for name in possible_head_names:
+            module = self._get_module_by_path(self.model, name)
+            if module is None:
+                continue
 
-        if not replaced:
-            for name in possible_head_names:
-                if hasattr(self.model, name):
-                    module = getattr(self.model, name)
-                    if isinstance(module, nn.Linear):
-                        # Replace
-                        in_features = module.in_features
-                        new_head = nn.Linear(in_features, num_classes)
-                        setattr(self.model, name, new_head)
-                        replaced = True
-                        break
-                    elif isinstance(module, nn.Sequential):
-                        # Check last layer of sequential
-                         if isinstance(module[-1], nn.Linear):
-                            in_features = module[-1].in_features
-                            # Replace just the last linear, or the whole sequential?
-                            # Let's replace the last linear
-                            module[-1] = nn.Linear(in_features, num_classes)
-                            replaced = True
-                            break
-        
+            if isinstance(module, nn.Linear):
+                in_features = module.in_features
+                new_head = nn.Linear(in_features, num_classes)
+                parent_path, attr = name.rsplit('.', 1) if '.' in name else (None, name)
+                if parent_path is None:
+                    setattr(self.model, attr, new_head)
+                else:
+                    parent = self._get_module_by_path(self.model, parent_path)
+                    if parent is not None:
+                        setattr(parent, attr, new_head)
+                replaced = True
+                break
+
+            if isinstance(module, nn.Sequential) and len(module) > 0 and isinstance(module[-1], nn.Linear):
+                in_features = module[-1].in_features
+                module[-1] = nn.Linear(in_features, num_classes)
+                replaced = True
+                break
+
         if not replaced:
             print("Warning: Could not automatically find and replace classifier head for GSViT. Ensure loaded model matches num_classes.")
 
-            print("Warning: Could not automatically find and replace classifier head for GSViT. Ensure loaded model matches num_classes.")
+    def _find_head_module_for_features(self):
+        candidate_paths = ['heads', 'heads.head', 'head', 'fc', 'classifier', 'layers.head']
+        for path in candidate_paths:
+            module = self._get_module_by_path(self.model, path)
+            if module is None:
+                continue
+            if isinstance(module, (nn.Linear, nn.Sequential)):
+                return module
+
+        matching_linears = []
+        all_linears = []
+        for module in self.model.modules():
+            if isinstance(module, nn.Linear):
+                all_linears.append(module)
+                if module.out_features == self.num_classes:
+                    matching_linears.append(module)
+
+        if matching_linears:
+            return matching_linears[-1]
+        if all_linears:
+            return all_linears[-1]
+        return None
 
     def forward(self, x, return_features=False):
         if not return_features:
@@ -134,12 +181,7 @@ class GSViT_Classifier(nn.Module):
             features_list.append(input[0])
             
         # Attach hook to head
-        head = None
-        possible_head_names = ['head', 'fc', 'classifier', 'layers.head']
-        for name in possible_head_names:
-            if hasattr(self.model, name):
-                head = getattr(self.model, name)
-                break
+        head = self._find_head_module_for_features()
         
         handle = None
         if head is not None:
@@ -205,4 +247,3 @@ class GSViT_Classifier(nn.Module):
                     param.requires_grad = True
         else:
              print(f"Warning: Could not identify a block container deep enough to unfreeze {n} blocks.")
-

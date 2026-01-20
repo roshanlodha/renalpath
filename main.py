@@ -8,7 +8,7 @@ import random
 
 from preprocess import preprocess_images, create_splits
 from dataset import TumorDataset, get_transforms
-from models import ResNet50_Classifier, GSViT_Classifier
+from models import ResNet50_Classifier, GSViT_Classifier, ViT_Classifier
 from train import train_model, get_weighted_dataloader
 from evaluate import evaluate_model
 from loss import FocalLoss
@@ -31,7 +31,7 @@ def main():
     set_seed(42)
     parser = argparse.ArgumentParser(description='Tumor Classification Pipeline')
     parser.add_argument('--mode', type=str, choices=['preprocess', 'train', 'evaluate', 'dry_run'], required=True, help='Pipeline mode')
-    parser.add_argument('--model_type', type=str, choices=['resnet', 'gsvit'], default='resnet', help='Model architecture')
+    parser.add_argument('--model_type', type=str, choices=['resnet', 'vit', 'gsvit'], default='resnet', help='Model architecture')
     parser.add_argument('--data_dir', type=str, default=DATA_DIR, help='Path to data directory')
     parser.add_argument('--processed_dir', type=str, default=os.path.join(DATA_DIR, 'processed'), help='Path to processed data')
     parser.add_argument('--metadata_csv', type=str, default=os.path.join(DATA_DIR, 'metadata.csv'), help='Path to metadata CSV')
@@ -51,8 +51,18 @@ def main():
         print("Checking ResNet-50...")
         model = ResNet50_Classifier(num_classes=5)
         dummy_input = torch.randn(1, 3, 224, 224)
-        out = model(dummy_input)
+        model.eval()
+        with torch.no_grad():
+            out = model(dummy_input)
         print(f"ResNet output shape: {out.shape}")
+
+        # Verify ViT
+        print("Checking ViT-B/16...")
+        model = ViT_Classifier(num_classes=5)
+        model.eval()
+        with torch.no_grad():
+            out = model(dummy_input)
+        print(f"ViT output shape: {out.shape}")
         
         # Verify GSViT
         print(f"Checking GSViT from {args.gsvit_path}...")
@@ -60,7 +70,9 @@ def main():
             try:
                 model = GSViT_Classifier(args.gsvit_path, num_classes=5)
                 # GSViT might expect BGR, but shape is same
-                out = model(dummy_input)
+                model.eval()
+                with torch.no_grad():
+                    out = model(dummy_input)
                 print(f"GSViT output shape: {out.shape}")
             except Exception as e:
                 print(f"GSViT check failed: {e}")
@@ -93,10 +105,13 @@ def main():
     # Model selection
     if args.model_type == 'resnet':
         model = ResNet50_Classifier(num_classes=num_classes)
-        is_gsvit = False
+        model_name_str = 'resnet'
+    elif args.model_type == 'vit':
+        model = ViT_Classifier(num_classes=num_classes)
+        model_name_str = 'vit'
     else:
         model = GSViT_Classifier(args.gsvit_path, num_classes=num_classes)
-        is_gsvit = True
+        model_name_str = 'gsvit'
         
     if args.mode == 'train':
         # Caching: Check if training is needed
@@ -109,7 +124,6 @@ def main():
         train_csv = os.path.join(args.processed_dir, 'train_split.csv')
         val_csv = os.path.join(args.processed_dir, 'val_split.csv')
         
-        model_name_str = 'gsvit' if is_gsvit else 'resnet'
         train_dataset = TumorDataset(train_csv, root_dir=args.processed_dir, transform=get_transforms('train', model_name_str), model_name=model_name_str)
         val_dataset = TumorDataset(val_csv, root_dir=args.processed_dir, transform=get_transforms('val', model_name_str), model_name=model_name_str)
         
@@ -139,7 +153,6 @@ def main():
         
     elif args.mode == 'evaluate':
         test_csv = os.path.join(args.processed_dir, 'test_split.csv')
-        model_name_str = 'gsvit' if is_gsvit else 'resnet'
         test_dataset = TumorDataset(test_csv, root_dir=args.processed_dir, transform=get_transforms('val', model_name_str), model_name=model_name_str)
         dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
         

@@ -19,7 +19,7 @@ def evaluate_model(model, dataloader, device, num_classes=5, class_names=None, o
     Evaluates the model and generates specific plots:
     1. Confusion Matrix ({model}_confusion.png)
     2. AUPRC Bar Plot ({model}_auprc.png)
-    3. Feature Correlation Heatmap ({model}_feature_heatmap.png) [GSViT only]
+    3. Feature Correlation Heatmap ({model}_feature_corr.png) [GSViT/ViT]
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -117,8 +117,8 @@ def evaluate_model(model, dataloader, device, num_classes=5, class_names=None, o
     else:
         print("Skipping AUPRC due to class mismatch in binarization.")
 
-    # --- Plot 3: Feature Correlation Heatmap (GSViT specific request, but generic works) ---
-    if model_name == 'gsvit' and len(all_features) > 0:
+    # --- Plot 3: Feature Correlation Heatmap (GSViT/ViT) ---
+    if model_name in {'gsvit', 'vit'} and len(all_features) > 0:
         # X: Features (1000s), Y: Cell Types
         # We need correlation between each feature and each class (one-hot)
         # Dimensions: Features (D) x Classes (C)

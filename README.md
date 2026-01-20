@@ -1,7 +1,7 @@
 # Renal Tumor Classification Pipeline: LITE Methods Paper
 
 ## 1. Project Overview
-This project implements a deep learning pipeline for automating the classification of renal tumors into 5 distinct subtypes. It supports two primary architectures: **ResNet50** (Transfer Learning) and **GSViT** (Global-Local Transformer). The pipeline is designed to be robust, handling class imbalance and varying image qualities through advanced preprocessing and loss functions.
+This project implements a deep learning pipeline for automating the classification of renal tumors into 5 distinct subtypes. It supports **ResNet50** (Transfer Learning), a baseline **ViT-B/16**, and **GSViT** (Global-Local Transformer). The pipeline is designed to be robust, handling class imbalance and varying image qualities through advanced preprocessing and loss functions.
 
 ## 2. Methodology
 
@@ -23,6 +23,7 @@ The preprocessing pipeline (`preprocess.py`, `dataset.py`) ensures high-quality 
     *   `ColorJitter` (brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)
 *   **Normalization**:
     *   **ResNet50**: Standard ImageNet statistics (`mean=[0.485, 0.456, 0.406]`, `std=[0.229, 0.224, 0.225]`). Input format: RGB.
+    *   **ViT-B/16**: Standard ImageNet statistics (`mean=[0.485, 0.456, 0.406]`, `std=[0.229, 0.224, 0.225]`). Input format: RGB.
     *   **GSViT**: Zero-centered normalization (`mean=[0.5, 0.5, 0.5]`, `std=[0.5, 0.5, 0.5]`). Input format: BGR (channels flipped).
 
 ### C. Model Architectures
@@ -39,19 +40,19 @@ The preprocessing pipeline (`preprocess.py`, `dataset.py`) ensures high-quality 
 The evaluation step now generates detailed visualizations in the `analysis/` folder:
 1.  **Confusion Matrix** (`{model}_confusion.png`): Visualizes misalignment between predicted and true labels.
 2.  **AUPRC Bar Plot** (`{model}_auprc.png`): Shows the Area Under the Precision-Recall Curve for each cell type, providing a robust metric for imbalanced classes.
-3.  **Feature Correlation Heatmap** (`gsvit_feature_corr.png`): (GSViT Only) A heatmap visualizing the correlation between extracted transformer features (x-axis) and histology types (y-axis), offering explainability into what the model is attending to.
+3.  **Feature Correlation Heatmap** (`{model}_feature_corr.png`): (GSViT/ViT) A heatmap visualizing the correlation between extracted transformer features (x-axis) and histology types (y-axis), offering explainability into what the model is attending to.
 
 ## 4. Repository Structure & Usage
 
 ### Key Scripts
-*   **`run.sh`**: The master orchestration script. Runs: Preprocessing -> ResNet Train/Eval -> GSViT Train/Eval (if weights exist).
+*   **`run.sh`**: The master orchestration script. Runs: Preprocessing -> ResNet Train/Eval -> ViT Train/Eval -> GSViT Train/Eval (if weights exist).
 *   **`main.py`**: The central entry point. Handles argument parsing and dispatches tasks to other modules.
     *   `python main.py --mode preprocess`: Runs data cleaning and splitting.
-    *   `python main.py --mode train --model_type [resnet|gsvit]`: Trains the specified model.
+    *   `python main.py --mode train --model_type [resnet|vit|gsvit]`: Trains the specified model.
     *   `python main.py --mode evaluate`: Evaluates the best saved model on the test set.
 *   **`dataset.py`**: Defines the `TumorDataset` class, managing image loading, border removal, and transforms.
 *   **`train.py`**: Contains the training loop, including metric tracking, checkpointing, and sampler logic.
-*   **`models.py`**: Defines the classes `ResNet50_Classifier` and `GSViT_Classifier`.
+*   **`models.py`**: Defines the classes `ResNet50_Classifier`, `ViT_Classifier`, and `GSViT_Classifier`.
 *   **`evaluate.py`**: Handles metric calculation (Acc, F1, AUPRC) and plotting.
 
 ### How to Run
