@@ -17,7 +17,7 @@ fi
 
 # 2. Training (ResNet Example)
 echo "[2/7] Training ResNet50..."
-./env/bin/python main.py --mode train --model_type resnet --epochs 100 --batch_size 32
+./env/bin/python main.py --mode train --model_type resnet --epochs 5 --batch_size 32
 if [ $? -ne 0 ]; then
     echo "ResNet Training failed!"
     exit 1
@@ -33,7 +33,7 @@ fi
 
 # 4. Training ViT
 echo "[4/7] Training ViT-B/16..."
-./env/bin/python main.py --mode train --model_type vit --epochs 100 --batch_size 32
+./env/bin/python main.py --mode train --model_type vit --epochs 5 --batch_size 32
 if [ $? -ne 0 ]; then
     echo "ViT Training failed!"
     exit 1
@@ -52,7 +52,7 @@ echo "[6/7] Training GSViT..."
 # Only run if base pickle exists
 GSVIT_PKL="models/GSViT.pkl"
 if [ -f "$GSVIT_PKL" ]; then
-    ./env/bin/python main.py --mode train --model_type gsvit --epochs 100 --batch_size 32 --gsvit_path "$GSVIT_PKL"
+    ./env/bin/python main.py --mode train --model_type gsvit --epochs 5 --batch_size 32 --gsvit_path "$GSVIT_PKL"
     if [ $? -ne 0 ]; then
         echo "GSViT Training failed!"
         exit 1

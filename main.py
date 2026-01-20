@@ -38,7 +38,7 @@ def main():
     parser.add_argument('--gsvit_path', type=str, default='models/GSViT.pkl', help='Path to GSViT pickle file')
     parser.add_argument('--output_dir', type=str, default='models', help='Directory to save outputs')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--epochs', type=int, default=5, help='Number of epochs')
     
     args = parser.parse_args()
     

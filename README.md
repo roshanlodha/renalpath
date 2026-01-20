@@ -53,7 +53,7 @@ All figures are saved under `analysis/{model}/`:
 *   **`run.sh`**: The master orchestration script. Runs: Preprocessing -> ResNet Train/Eval -> ViT Train/Eval -> GSViT Train/Eval (if weights exist).
 *   **`main.py`**: The central entry point. Handles argument parsing and dispatches tasks to other modules.
     *   `python main.py --mode preprocess`: Runs data cleaning and splitting.
-    *   `python main.py --mode train --model_type [resnet|vit|gsvit]`: Trains the specified model (default `--epochs 100`).
+    *   `python main.py --mode train --model_type [resnet|vit|gsvit]`: Trains the specified model (default `--epochs 5`).
     *   `python main.py --mode evaluate --model_type [resnet|vit|gsvit]`: Evaluates the best saved model on the test set.
 *   **`dataset.py`**: Defines the `TumorDataset` class, managing image loading, border removal, and transforms.
 *   **`train.py`**: Contains the training loop, including metric tracking, checkpointing, and sampler logic.

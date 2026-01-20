@@ -73,7 +73,6 @@ class TumorDataset(Dataset):
         image_pil = Image.fromarray(image)
 
         # 3. Padding & Center Crop logic
-        # If image < 1024, pad first. Then CenterCrop(1024).
         w, h = image_pil.size
         target_size = 224*4
         
