@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from torchvision import models
+from pathlib import Path
+import sys
 
 class ResNet50_Classifier(nn.Module):
     def __init__(self, num_classes=5, pretrained=True):
@@ -55,16 +57,43 @@ class ViT_Classifier(nn.Module):
         if not return_features:
             return self.model(x)
 
-        if not hasattr(self.model, "forward_features"):
-            raise RuntimeError("ViT model does not expose forward_features; cannot return features.")
+        # Torchvision's ViT implementation does not expose `forward_features` like timm.
+        # To keep feature extraction robust across versions, capture the input to the
+        # classifier head via a forward hook.
+        features_list = []
 
-        features = self.model.forward_features(x)
-        if isinstance(features, (tuple, list)):
-            features = features[0]
-        if hasattr(features, "dim") and features.dim() == 3:
-            features = features[:, 0]
+        def hook_fn(module, input, output):
+            if input:
+                features_list.append(input[0])
 
-        logits = self.model.heads(features)
+        head = None
+        for attr in ["heads", "head", "fc", "classifier"]:
+            if hasattr(self.model, attr):
+                candidate = getattr(self.model, attr)
+                if isinstance(candidate, nn.Module):
+                    head = candidate
+                    break
+
+        if head is None:
+            # Best-effort fallback for non-torchvision ViT variants.
+            if hasattr(self.model, "forward_features"):
+                features = self.model.forward_features(x)
+                if isinstance(features, (tuple, list)):
+                    features = features[0]
+                if hasattr(features, "dim") and features.dim() == 3:
+                    features = features[:, 0]
+                logits = self.model(x)
+                return logits, features
+
+            raise RuntimeError("ViT model does not expose a recognizable head; cannot return features.")
+
+        handle = head.register_forward_hook(hook_fn)
+        try:
+            logits = self.model(x)
+        finally:
+            handle.remove()
+
+        features = features_list[0] if features_list else None
         return logits, features
 
 
@@ -73,39 +102,131 @@ class GSViT_Classifier(nn.Module):
         super(GSViT_Classifier, self).__init__()
         self.num_classes = num_classes
         
-        # Load the pre-trained model (no ViT fallback; ViT is a separate model_type)
+        checkpoint = self._load_checkpoint(model_path)
+
+        # Case 1: full pickled model object
+        if isinstance(checkpoint, nn.Module):
+            self.model = checkpoint
+            self._replace_head_if_needed(num_classes)
+            self._freeze_all()
+            self._unfreeze_head()
+            return
+
+        # Case 2: state_dict (e.g., EfficientViT autoencoder weights with "evit.*" keys)
+        if isinstance(checkpoint, dict):
+            state_dict = self._extract_state_dict(checkpoint, model_path)
+            self.model = self._build_efficientvit_m5(num_classes=1000)
+            mapped_state_dict = self._map_checkpoint_state_dict(state_dict)
+            try:
+                self.model.load_state_dict(mapped_state_dict, strict=False)
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"Error loading weights from '{model_path}'. "
+                    "Ensure the checkpoint matches the EfficientViT-M5 backbone."
+                ) from e
+
+            self._replace_head_if_needed(num_classes)
+            self._freeze_all()
+            self._unfreeze_head()
+            return
+
+        raise TypeError(f"Unsupported GSViT checkpoint type: {type(checkpoint)}")
+
+    def _load_checkpoint(self, model_path):
         try:
-            self.model = torch.load(model_path, map_location='cpu', weights_only=False)
+            return torch.load(model_path, map_location="cpu", weights_only=False)
         except Exception as e:
-            raise RuntimeError(f"Error loading GSViT model from '{model_path}': {e}") from e
+            raise RuntimeError(f"Error loading GSViT checkpoint from '{model_path}': {e}") from e
 
-        if isinstance(self.model, dict):
-            raise ValueError(
-                f"The file '{model_path}' appears to contain a state_dict, but the GSViT model architecture is missing. "
-                "Provide a pickled GSViT model object instead."
-            )
+    def _extract_state_dict(self, checkpoint, model_path):
+        if "state_dict" in checkpoint and isinstance(checkpoint["state_dict"], dict):
+            return checkpoint["state_dict"]
+        if "model" in checkpoint and isinstance(checkpoint["model"], dict):
+            return checkpoint["model"]
 
-            
-        # Freeze all parameters initially
+        # Plain state_dict (OrderedDict[str, Tensor])
+        if all(isinstance(k, str) for k in checkpoint.keys()) and all(torch.is_tensor(v) for v in checkpoint.values()):
+            return checkpoint
+
+        raise ValueError(
+            f"Unsupported checkpoint format in '{model_path}'. Expected a pickled nn.Module or a state_dict-like dict."
+        )
+
+    def _ensure_efficientvit_on_path(self):
+        repo_root = Path(__file__).resolve().parent
+        models_dir = repo_root / "models"
+        if models_dir.is_dir():
+            models_dir_str = str(models_dir)
+            if models_dir_str not in sys.path:
+                sys.path.insert(0, models_dir_str)
+
+    def _build_efficientvit_m5(self, num_classes=1000):
+        self._ensure_efficientvit_on_path()
+        try:
+            from EfficientViT.classification.model.efficientvit import EfficientViT
+        except Exception as e:
+            raise RuntimeError(
+                "Could not import EfficientViT. Expected code at 'models/EfficientViT'. "
+                "Ensure you have downloaded the GSViT repo's EfficientViT folder into 'models/EfficientViT'."
+            ) from e
+
+        model_cfg = {
+            "img_size": 224,
+            "patch_size": 16,
+            "embed_dim": [192, 288, 384],
+            "depth": [1, 3, 4],
+            "num_heads": [3, 3, 4],
+            "window_size": [7, 7, 7],
+            "kernels": [7, 5, 3, 3],
+        }
+        return EfficientViT(num_classes=num_classes, distillation=False, **model_cfg)
+
+    def _map_checkpoint_state_dict(self, state_dict):
+        # Support checkpoints saved from DataParallel ("module.*")
+        cleaned = {}
+        for k, v in state_dict.items():
+            if k.startswith("module."):
+                k = k[len("module."):]
+            cleaned[k] = v
+
+        keys = list(cleaned.keys())
+
+        # EfficientViT autoencoder format from GSViT_old.py: "evit.{0..3}.*" + "decoder.*"
+        if any(k.startswith("evit.") for k in keys):
+            mapped = {}
+            for k, v in cleaned.items():
+                if not k.startswith("evit."):
+                    continue
+                rest = k[len("evit."):]
+                if rest.startswith("0."):
+                    mapped["patch_embed." + rest[2:]] = v
+                elif rest.startswith("1."):
+                    mapped["blocks1." + rest[2:]] = v
+                elif rest.startswith("2."):
+                    mapped["blocks2." + rest[2:]] = v
+                elif rest.startswith("3."):
+                    mapped["blocks3." + rest[2:]] = v
+            return mapped
+
+        # Checkpoints saved from this project's GSViT_Classifier: "model.*"
+        if any(k.startswith("model.") for k in keys):
+            return {k[len("model."):]: v for k, v in cleaned.items() if k.startswith("model.")}
+
+        # Plain EfficientViT state_dict
+        return cleaned
+
+    def _freeze_all(self):
         for param in self.model.parameters():
             param.requires_grad = False
-            
-        # We need to ensure the head handles num_classes.
-        # Assuming the loaded model is a full model.
-        # Check if we need to replace the head or if it's already compatible.
-        # The prompt implies we might use this as a feature extractor or finetuner.
-        # "Load pre-trained .pkl... Unfreezing Strategy... provide method unfreeze_last_blocks"
-        # It DOES NOT explicitly say to replace the head like ResNet, but usually we must if classes differ.
-        # However, Phase 1 analysis showed gsvit_model.py replacing the head.
-        # Let's inspect the model structure dynamically if possible, or assume generic "head" or "fc".
-        
-        # IMPORTANT: The prompt for Phase 2 only specified: "Load pre-trained... Unfreezing Strategy...".
-        # It did NOT specify replacing the head for GSViT. However, it's a "Classifier", so it likely needs one.
-        # I will assume we should just allow the loaded model to be used, but provide unfreeze logic.
-        # But if the loaded model has 1000 classes and we need 5, we MUST replace the head.
-        # I will add logic to try and replace the head if a common name is found, consistent with typical transfer learning.
-        
-        self._replace_head_if_needed(num_classes)
+
+    def _unfreeze_head(self):
+        for name in ["head", "fc", "classifier", "heads"]:
+            if hasattr(self.model, name):
+                module = getattr(self.model, name)
+                if isinstance(module, nn.Module):
+                    for param in module.parameters():
+                        param.requires_grad = True
+                return
 
     def _get_module_by_path(self, root, path):
         obj = root

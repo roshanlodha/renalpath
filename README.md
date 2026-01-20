@@ -1,7 +1,7 @@
 # Renal Tumor Classification Pipeline: LITE Methods Paper
 
 ## 1. Project Overview
-This project implements a deep learning pipeline for automating the classification of renal tumors into 5 distinct subtypes. It supports **ResNet50** (Transfer Learning), a baseline **ViT-B/16**, and **GSViT** (Global-Local Transformer). The pipeline is designed to be robust, handling class imbalance and varying image qualities through advanced preprocessing and loss functions.
+This project implements a deep learning pipeline for automating the classification of renal tumors into distinct subtypes (the number of classes is inferred from `data/processed/classes.npy`, with a fallback default of 5). It supports **ResNet50** (Transfer Learning), a baseline **ViT-B/16**, and **GSViT** (Global-Local Transformer). The pipeline is designed to be robust, handling class imbalance and varying image qualities through advanced preprocessing and loss functions.
 
 ## 2. Methodology
 
@@ -14,7 +14,11 @@ The preprocessing pipeline (`preprocess.py`, `dataset.py`) ensures high-quality 
     *   Images smaller than `1024x1024` are padded to `1024x1024` before processing.
     *   A center crop of `1024x1024` is applied.
     *   Final resizing ensures all inputs are `(224, 224)` for model compatibility.
-*   **Data Splitting**: We utilize **StratifiedGroupKFold** to create an 80/10/10 split (Train/Val/Test). Crucially, this split is grouped by `Patient ID` to prevent data leakage—slices from the same patient never appear in both training and validation sets.
+*   **Data Splitting**: Patient-level stratified split (by `Class`) grouped by `Patient ID` to prevent leakage:
+    *   **Train+Val**: 50% of patients
+    *   **Test**: 50% of patients
+    *   **Val**: 20% of Train+Val (i.e., 10% overall), leaving 40% overall for Train
+    *   Split configuration is recorded in `data/processed/split_config.json`.
 
 ### B. Input Normalization & Augmentation
 *   **Augmentation (Train Only)**:
@@ -37,10 +41,11 @@ The preprocessing pipeline (`preprocess.py`, `dataset.py`) ensures high-quality 
     5.  `Linear(512 -> Num_Classes)`
 
 ### D. Analysis & Interpretation
-The evaluation step now generates detailed visualizations in the `analysis/` folder:
-1.  **Confusion Matrix** (`{model}_confusion.png`): Visualizes misalignment between predicted and true labels.
-2.  **AUPRC Bar Plot** (`{model}_auprc.png`): Shows the Area Under the Precision-Recall Curve for each cell type, providing a robust metric for imbalanced classes.
-3.  **Feature Correlation Heatmap** (`{model}_feature_corr.png`): (GSViT/ViT) A heatmap visualizing the correlation between extracted transformer features (x-axis) and histology types (y-axis), offering explainability into what the model is attending to.
+All figures are saved under `analysis/{model}/`:
+1.  **Confusion Matrix** (`analysis/{model}/confusion.png`): Visualizes misalignment between predicted and true labels.
+2.  **AUPRC Bar Plot** (`analysis/{model}/auprc.png`): AUPRC per class, with dashed-outline bars showing **training-set class prevalence**.
+3.  **Feature Correlation Heatmap** (`analysis/{model}/feature_corr.png`): (GSViT/ViT) Feature–histology correlation with a fixed color scale from **-1 to 1**.
+4.  **Training Curves** (`analysis/{model}/training_curves.png`): Train/val loss and accuracy over epochs (saved during training).
 
 ## 4. Repository Structure & Usage
 
@@ -48,8 +53,8 @@ The evaluation step now generates detailed visualizations in the `analysis/` fol
 *   **`run.sh`**: The master orchestration script. Runs: Preprocessing -> ResNet Train/Eval -> ViT Train/Eval -> GSViT Train/Eval (if weights exist).
 *   **`main.py`**: The central entry point. Handles argument parsing and dispatches tasks to other modules.
     *   `python main.py --mode preprocess`: Runs data cleaning and splitting.
-    *   `python main.py --mode train --model_type [resnet|vit|gsvit]`: Trains the specified model.
-    *   `python main.py --mode evaluate`: Evaluates the best saved model on the test set.
+    *   `python main.py --mode train --model_type [resnet|vit|gsvit]`: Trains the specified model (default `--epochs 100`).
+    *   `python main.py --mode evaluate --model_type [resnet|vit|gsvit]`: Evaluates the best saved model on the test set.
 *   **`dataset.py`**: Defines the `TumorDataset` class, managing image loading, border removal, and transforms.
 *   **`train.py`**: Contains the training loop, including metric tracking, checkpointing, and sampler logic.
 *   **`models.py`**: Defines the classes `ResNet50_Classifier`, `ViT_Classifier`, and `GSViT_Classifier`.
@@ -62,4 +67,4 @@ The evaluation step now generates detailed visualizations in the `analysis/` fol
     ./run.sh
     ```
     Outputs (models) will be in `models/`.
-    Plots and analysis figures will be in `analysis/`.
+    Plots and analysis figures will be in `analysis/{model}/`.

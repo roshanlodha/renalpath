@@ -2,7 +2,8 @@ import os
 import cv2
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedGroupKFold
+import json
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
 
@@ -12,19 +13,28 @@ def preprocess_images(raw_data_dir, output_dir, metadata_csv):
     Returns a DataFrame with valid image paths and metadata.
     """
     os.makedirs(output_dir, exist_ok=True)
-    
-    df = pd.read_csv(metadata_csv)
-    
-    # Caching check
+
+    processed_metadata_path = os.path.join(output_dir, 'processed_metadata.csv')
     train_split_path = os.path.join(output_dir, 'train_split.csv')
     val_split_path = os.path.join(output_dir, 'val_split.csv')
     test_split_path = os.path.join(output_dir, 'test_split.csv')
-    classes_path = os.path.join(output_dir, 'classes.npy')
-    
-    if os.path.exists(train_split_path) and os.path.exists(val_split_path) and \
-       os.path.exists(test_split_path) and os.path.exists(classes_path):
-        print(f"Processed data found in {output_dir}. Skipping preprocessing.")
-        return df # Return df just to satisfy contract, though creates_splits won't need it if we skip
+
+    # Caching check: if processed images already exist, reuse the manifest to enable re-splitting.
+    if os.path.exists(processed_metadata_path):
+        print(f"Processed images found in {output_dir}. Skipping preprocessing.")
+        return pd.read_csv(processed_metadata_path)
+
+    # Backwards-compatible fallback (older runs): reconstruct manifest from existing splits
+    if os.path.exists(train_split_path) and os.path.exists(val_split_path) and os.path.exists(test_split_path):
+        print(f"Processed splits found in {output_dir} but no manifest; reconstructing processed metadata.")
+        df_train = pd.read_csv(train_split_path)
+        df_val = pd.read_csv(val_split_path)
+        df_test = pd.read_csv(test_split_path)
+        df_processed = pd.concat([df_train, df_val, df_test], ignore_index=True)[['img_path', 'Patient ID', 'Class']]
+        df_processed.to_csv(processed_metadata_path, index=False)
+        return df_processed
+
+    df = pd.read_csv(metadata_csv)
     
     valid_data = []
     
@@ -80,49 +90,96 @@ def preprocess_images(raw_data_dir, output_dir, metadata_csv):
             'Class': row['Class']
         })
         
-    return pd.DataFrame(valid_data)
+    processed_df = pd.DataFrame(valid_data)
+    processed_df.to_csv(processed_metadata_path, index=False)
+    return processed_df
 
-def create_splits(df, output_dir):
+def create_splits(
+    df,
+    output_dir,
+    *,
+    trainval_fraction=0.5,
+    val_fraction_of_trainval=0.2,
+    random_state=42,
+    force=False,
+):
     """
-    Performs patient-level stratified split (80/10/10) using StratifiedGroupKFold.
+    Performs patient-level stratified split:
+    - Train+Val: 50%
+    - Test: 50%
+    - Val: 20% of Train+Val (i.e., 10% total)
     """
+    os.makedirs(output_dir, exist_ok=True)
+
+    train_split_path = os.path.join(output_dir, 'train_split.csv')
+    val_split_path = os.path.join(output_dir, 'val_split.csv')
+    test_split_path = os.path.join(output_dir, 'test_split.csv')
+    classes_path = os.path.join(output_dir, 'classes.npy')
+    split_config_path = os.path.join(output_dir, 'split_config.json')
+
+    desired_config = {
+        'trainval_fraction': float(trainval_fraction),
+        'test_fraction': float(1.0 - trainval_fraction),
+        'val_fraction_of_trainval': float(val_fraction_of_trainval),
+        'random_state': int(random_state),
+        'group_column': 'Patient ID',
+        'stratify_column': 'Class',
+    }
+
+    if not force and os.path.exists(split_config_path) and \
+       os.path.exists(train_split_path) and os.path.exists(val_split_path) and os.path.exists(test_split_path) and os.path.exists(classes_path):
+        try:
+            with open(split_config_path, 'r') as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {}
+
+        keys = desired_config.keys()
+        if all(existing.get(k) == desired_config[k] for k in keys):
+            print("Splits already exist and match split_config.json. Skipping split creation.")
+            return
+
     le = LabelEncoder()
     df['label_encoded'] = le.fit_transform(df['Class'])
     
     label_map = dict(zip(le.classes_, le.transform(le.classes_)))
     print(f"Label Mapping: {label_map}")
-    
-    # StratifiedGroupKFold
-    # We need 80% Train, 10% Val, 10% Test.
-    # Step 1: 5 splits -> 20% each. Take 1 fold as Temp (20%), rest as Train (80%).
-    sgkf = StratifiedGroupKFold(n_splits=5)
-    
+
+    # Patient-level stratified split by patient label
+    # Derive a single label per patient (mode of the patient's images).
+    patient_labels = (
+        df.groupby('Patient ID')['Class']
+        .agg(lambda s: s.value_counts().idxmax())
+    )
+    if (df.groupby('Patient ID')['Class'].nunique() > 1).any():
+        mixed = (df.groupby('Patient ID')['Class'].nunique() > 1).sum()
+        print(f"WARNING: Detected {mixed} patients with multiple classes; using per-patient majority label for stratification.")
+
+    class_to_label = {cls_name: int(i) for i, cls_name in enumerate(le.classes_)}
+    patient_y = patient_labels.map(class_to_label)
+
+    patient_ids = patient_labels.index.to_numpy()
+
+    trainval_patients, test_patients = train_test_split(
+        patient_ids,
+        test_size=(1.0 - trainval_fraction),
+        stratify=patient_y.to_numpy(),
+        random_state=random_state,
+        shuffle=True,
+    )
+
+    trainval_y = patient_y.loc[trainval_patients]
+    train_patients, val_patients = train_test_split(
+        trainval_patients,
+        test_size=val_fraction_of_trainval,
+        stratify=trainval_y.to_numpy(),
+        random_state=random_state,
+        shuffle=True,
+    )
+
     df['split'] = 'train'
-    
-    # Groups must be patient IDs
-    groups = df['Patient ID']
-    y = df['label_encoded']
-    
-    for train_idx, temp_idx in sgkf.split(df, y, groups=groups):
-        df.loc[temp_idx, 'split'] = 'temp'
-        break
-        
-    # Step 2: Split Temp (20%) into Val (10%) and Test (10%) -> 50/50 split
-    df_temp = df[df['split'] == 'temp'].copy()
-    
-    if len(df_temp) > 0:
-        sgkf_val = StratifiedGroupKFold(n_splits=2)
-        
-        # Reset index for split to return correct relative indices, or use logic
-        # Easier to use index map
-        for val_idx, test_idx in sgkf_val.split(df_temp, df_temp['label_encoded'], groups=df_temp['Patient ID']):
-            # val_idx are integer indices into df_temp
-            val_indices = df_temp.iloc[val_idx].index
-            test_indices = df_temp.iloc[test_idx].index
-            
-            df.loc[val_indices, 'split'] = 'val'
-            df.loc[test_indices, 'split'] = 'test'
-            break
+    df.loc[df['Patient ID'].isin(val_patients), 'split'] = 'val'
+    df.loc[df['Patient ID'].isin(test_patients), 'split'] = 'test'
     
     # Save splits
     train_df = df[df['split'] == 'train']
@@ -152,3 +209,6 @@ def create_splits(df, output_dir):
     test_df.to_csv(os.path.join(output_dir, 'test_split.csv'), index=False)
     
     np.save(os.path.join(output_dir, 'classes.npy'), le.classes_)
+
+    with open(split_config_path, 'w') as f:
+        json.dump(desired_config, f, indent=2, sort_keys=True)

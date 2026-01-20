@@ -172,7 +172,14 @@ def train_model_full(model, dataloaders, device, num_epochs=30, patience=10, cri
     model.load_state_dict(best_model_wts)
     return model, history
 
-def get_weighted_dataloader(dataset, batch_size=32, num_classes=5, num_workers=4):
+def get_weighted_dataloader(
+    dataset,
+    batch_size=32,
+    num_classes=5,
+    num_workers=4,
+    *,
+    upsample_to_max=True,
+):
     """
     Returns a DataLoader with WeightedRandomSampler.
     """
@@ -187,9 +194,17 @@ def get_weighted_dataloader(dataset, batch_size=32, num_classes=5, num_workers=4
     sample_weights = class_weights[targets]
     
     # Create Sampler
+    present_counts = class_counts[class_counts > 0]
+    if upsample_to_max and len(present_counts) > 0:
+        max_count = int(present_counts.max())
+        num_present_classes = int((class_counts > 0).sum())
+        num_samples = max_count * num_present_classes
+    else:
+        num_samples = len(sample_weights)
+
     sampler = WeightedRandomSampler(
         weights=torch.from_numpy(sample_weights).type(torch.DoubleTensor),
-        num_samples=len(sample_weights),
+        num_samples=num_samples,
         replacement=True
     )
     
@@ -201,6 +216,45 @@ def get_weighted_dataloader(dataset, batch_size=32, num_classes=5, num_workers=4
     )
     
     return dataloader
+
+# --- Plotting ---
+def save_training_curves(history, output_path, model_name='model'):
+    if not history:
+        return
+
+    keys = ('train_loss', 'val_loss', 'train_acc', 'val_acc')
+    if not all(k in history for k in keys):
+        return
+
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    epochs = range(1, len(history['train_loss']) + 1)
+
+    plt.figure(figsize=(12, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, history['train_loss'], label='Train')
+    plt.plot(epochs, history['val_loss'], label='Val')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title(f'Loss ({model_name})')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, history['train_acc'], label='Train')
+    plt.plot(epochs, history['val_acc'], label='Val')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.title(f'Accuracy ({model_name})')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    plt.close()
 
 # Expose the simple name
 train_model = train_model_full

@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import (
@@ -14,12 +16,21 @@ from sklearn.metrics import (
 from sklearn.preprocessing import label_binarize
 import os
 
-def evaluate_model(model, dataloader, device, num_classes=5, class_names=None, output_dir='analysis', model_name='model'):
+def evaluate_model(
+    model,
+    dataloader,
+    device,
+    num_classes=5,
+    class_names=None,
+    output_dir='analysis',
+    model_name='model',
+    train_class_prevalence=None,
+):
     """
     Evaluates the model and generates specific plots:
-    1. Confusion Matrix ({model}_confusion.png)
-    2. AUPRC Bar Plot ({model}_auprc.png)
-    3. Feature Correlation Heatmap ({model}_feature_corr.png) [GSViT/ViT]
+    1. Confusion Matrix (confusion.png)
+    2. AUPRC Bar Plot (auprc.png)
+    3. Feature Correlation Heatmap (feature_corr.png) [GSViT/ViT]
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -45,6 +56,13 @@ def evaluate_model(model, dataloader, device, num_classes=5, class_names=None, o
                 # Fallback if somehow using old model code (unlikely)
                 logits = model(inputs)
                 features = None
+            except RuntimeError as e:
+                msg = str(e).lower()
+                if "cannot return features" in msg or "return features" in msg or "recognizable head" in msg:
+                    logits = model(inputs)
+                    features = None
+                else:
+                    raise
             
             probs = torch.softmax(logits, dim=1)
             _, preds = torch.max(logits, 1)
@@ -86,7 +104,7 @@ def evaluate_model(model, dataloader, device, num_classes=5, class_names=None, o
     plt.xlabel('Predicted')
     plt.ylabel('True')
     plt.title(f'Confusion Matrix ({model_name})')
-    cm_path = os.path.join(output_dir, f'{model_name}_confusion.png')
+    cm_path = os.path.join(output_dir, 'confusion.png')
     plt.savefig(cm_path)
     plt.close()
     print(f"Saved Confusion Matrix to {cm_path}")
@@ -104,15 +122,34 @@ def evaluate_model(model, dataloader, device, num_classes=5, class_names=None, o
             auprc_scores.append(ap)
             print(f"Class {class_names[i]} AUPRC: {ap:.4f}")
             
-        plt.figure(figsize=(10, 6))
-        sns.barplot(x=class_names, y=auprc_scores, hue=class_names, palette='viridis', legend=False)
-        plt.title(f'AUPRC per Class ({model_name})')
-        plt.ylabel('Average Precision Score')
-        plt.xlabel('Cell Type')
-        plt.ylim(0, 1.0)
-        auprc_path = os.path.join(output_dir, f'{model_name}_auprc.png')
-        plt.savefig(auprc_path)
-        plt.close()
+        x = np.arange(num_classes)
+        colors = plt.get_cmap('viridis')(np.linspace(0, 1, num_classes))
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.bar(x, auprc_scores, color=colors, label='AUPRC')
+
+        if train_class_prevalence is not None and len(train_class_prevalence) == num_classes:
+            ax.bar(
+                x,
+                train_class_prevalence,
+                fill=False,
+                edgecolor='black',
+                linewidth=2,
+                linestyle='--',
+                label='Train prevalence',
+            )
+
+        ax.set_title(f'AUPRC per Class ({model_name})')
+        ax.set_ylabel('Average Precision Score')
+        ax.set_xlabel('Cell Type')
+        ax.set_ylim(0, 1.0)
+        ax.set_xticks(x, class_names, rotation=45, ha='right')
+        ax.legend()
+
+        auprc_path = os.path.join(output_dir, 'auprc.png')
+        fig.tight_layout()
+        fig.savefig(auprc_path, dpi=200)
+        plt.close(fig)
         print(f"Saved AUPRC Plot to {auprc_path}")
     else:
         print("Skipping AUPRC due to class mismatch in binarization.")
@@ -175,12 +212,20 @@ def evaluate_model(model, dataloader, device, num_classes=5, class_names=None, o
         
         plt.figure(figsize=(15, 8))
         # no x-axis labels requested
-        sns.heatmap(heatmap_data, cmap='coolwarm', center=0, xticklabels=False, yticklabels=class_names)
+        sns.heatmap(
+            heatmap_data,
+            cmap='coolwarm',
+            center=0,
+            vmin=-1,
+            vmax=1,
+            xticklabels=False,
+            yticklabels=class_names,
+        )
         plt.xlabel('Features (Extracted)')
         plt.ylabel('Cell Type')
         plt.title(f'Feature-Histology Correlation ({model_name})')
         
-        heatmap_path = os.path.join(output_dir, f'{model_name}_feature_corr.png')
+        heatmap_path = os.path.join(output_dir, 'feature_corr.png')
         plt.savefig(heatmap_path)
         plt.close()
         print(f"Saved Feature Correlation Heatmap to {heatmap_path}")

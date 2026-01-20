@@ -9,7 +9,7 @@ import random
 from preprocess import preprocess_images, create_splits
 from dataset import TumorDataset, get_transforms
 from models import ResNet50_Classifier, GSViT_Classifier, ViT_Classifier
-from train import train_model, get_weighted_dataloader
+from train import train_model, get_weighted_dataloader, save_training_curves
 from evaluate import evaluate_model
 from loss import FocalLoss
 
@@ -38,7 +38,7 @@ def main():
     parser.add_argument('--gsvit_path', type=str, default='models/GSViT.pkl', help='Path to GSViT pickle file')
     parser.add_argument('--output_dir', type=str, default='models', help='Directory to save outputs')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=30, help='Number of epochs')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     
     args = parser.parse_args()
     
@@ -55,6 +55,9 @@ def main():
         with torch.no_grad():
             out = model(dummy_input)
         print(f"ResNet output shape: {out.shape}")
+        with torch.no_grad():
+            logits, feats = model(dummy_input, return_features=True)
+        print(f"ResNet features shape: {None if feats is None else tuple(feats.shape)}")
 
         # Verify ViT
         print("Checking ViT-B/16...")
@@ -63,6 +66,9 @@ def main():
         with torch.no_grad():
             out = model(dummy_input)
         print(f"ViT output shape: {out.shape}")
+        with torch.no_grad():
+            logits, feats = model(dummy_input, return_features=True)
+        print(f"ViT features shape: {None if feats is None else tuple(feats.shape)}")
         
         # Verify GSViT
         print(f"Checking GSViT from {args.gsvit_path}...")
@@ -74,6 +80,9 @@ def main():
                 with torch.no_grad():
                     out = model(dummy_input)
                 print(f"GSViT output shape: {out.shape}")
+                with torch.no_grad():
+                    logits, feats = model(dummy_input, return_features=True)
+                print(f"GSViT features shape: {None if feats is None else tuple(feats.shape)}")
             except Exception as e:
                 print(f"GSViT check failed: {e}")
         else:
@@ -84,12 +93,7 @@ def main():
 
     if args.mode == 'preprocess':
         df = preprocess_images(args.data_dir, args.processed_dir, args.metadata_csv)
-        # Check if splits already exist (preprocess_images returns early)
-        train_split = os.path.join(args.processed_dir, 'train_split.csv')
-        if os.path.exists(train_split):
-             print("Splits already exist. Skipping split creation.")
-        else:
-             create_splits(df, args.processed_dir)
+        create_splits(df, args.processed_dir)
         return
 
     # Load classes
@@ -150,6 +154,10 @@ def main():
         # Save model
         os.makedirs(args.output_dir, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_{args.model_type}.pth'))
+
+        analysis_dir = os.path.join('analysis', model_name_str)
+        os.makedirs(analysis_dir, exist_ok=True)
+        save_training_curves(history, os.path.join(analysis_dir, 'training_curves.png'), model_name=model_name_str)
         
     elif args.mode == 'evaluate':
         test_csv = os.path.join(args.processed_dir, 'test_split.csv')
@@ -165,8 +173,27 @@ def main():
         model.load_state_dict(torch.load(model_path, map_location=device))
         
         # Output analysis to a separate folder
-        analysis_dir = 'analysis'
-        evaluate_model(model, dataloader, device, num_classes=num_classes, class_names=class_names, output_dir=analysis_dir, model_name=model_name_str)
+        analysis_dir = os.path.join('analysis', model_name_str)
+        train_prevalence = None
+        train_csv = os.path.join(args.processed_dir, 'train_split.csv')
+        if os.path.exists(train_csv):
+            train_df = pd.read_csv(train_csv)
+            if 'label_encoded' in train_df.columns:
+                counts = np.bincount(train_df['label_encoded'].astype(int), minlength=num_classes)
+                total = counts.sum()
+                if total > 0:
+                    train_prevalence = counts / total
+
+        evaluate_model(
+            model,
+            dataloader,
+            device,
+            num_classes=num_classes,
+            class_names=class_names,
+            output_dir=analysis_dir,
+            model_name=model_name_str,
+            train_class_prevalence=train_prevalence,
+        )
 
 if __name__ == "__main__":
     main()

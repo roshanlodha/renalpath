@@ -23,10 +23,15 @@ class TumorDataset(Dataset):
         self.mode = mode
         self.model_name = model_name
 
-        # Define Label Encoder if not already handled
-        # Assuming 'Class' column exists based on metadata.csv provided earlier
-        self.classes = sorted(self.data['Class'].unique())
-        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
+        # Prefer pre-computed label encoding from preprocessing for consistency across splits.
+        if 'label_encoded' in self.data.columns:
+            self.data['label_encoded'] = self.data['label_encoded'].astype(int)
+            self.classes = None
+            self.class_to_idx = None
+        else:
+            # Fallback: derive label indices from classes present in this CSV.
+            self.classes = sorted(self.data['Class'].unique())
+            self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
 
     def __len__(self):
         return len(self.data)
@@ -94,8 +99,11 @@ class TumorDataset(Dataset):
             image_pil = image_pil[[2, 1, 0], :, :]
 
         # Label encoding
-        label_name = self.data.iloc[idx]['Class']
-        label = self.class_to_idx[label_name]
+        if 'label_encoded' in self.data.columns:
+            label = int(self.data.iloc[idx]['label_encoded'])
+        else:
+            label_name = self.data.iloc[idx]['Class']
+            label = self.class_to_idx[label_name]
 
         return image_pil, label
 
