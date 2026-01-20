@@ -49,11 +49,10 @@ def evaluate_model(
             labels = labels.to(device)
             
             # Check if model supports return_features
-            # We implemented return_features in both ResNet and GSViT now
             try:
                 logits, features = model(inputs, return_features=True)
             except TypeError:
-                # Fallback if somehow using old model code (unlikely)
+                # Compatibility fallback for models without return_features arg
                 logits = model(inputs)
                 features = None
             except RuntimeError as e:
@@ -165,36 +164,10 @@ def evaluate_model(
     # --- Plot 3: Feature Correlation Heatmap (GSViT/ViT) ---
     if model_name in {'gsvit', 'vit'} and len(all_features) > 0:
         # X: Features (1000s), Y: Cell Types
-        # We need correlation between each feature and each class (one-hot)
-        # Dimensions: Features (D) x Classes (C)
-        
-        # Normalize features? Pearson Correlation is scale invariant relative to itself, but centering helps.
-        # np.corrcoef expects rows=variables, cols=observations.
-        
-        # We want corr(Feature_j, Class_k)
-        # Construct matrix of [Features | Classes] -> Corr Matrix
-        
-        # D = all_features.shape[1]
-        # C = num_classes
-        
-        # Calculating full correlation matrix (D+C)x(D+C) is huge if D is large.
-        # Check size. ResNet=2048, GSViT usually 768 or 1024. It's manageable.
-        
-        # One-hot labels
-        y_onehot = label_binarize(all_labels, classes=range(num_classes)) # (N, C)
-        
-        # Stack features and targets
-        # data = np.hstack([all_features, y_onehot]) # (N, D+C)
-        # corr = np.corrcoef(data, rowvar=False) # (D+C, D+C)
-        
-        # We only care about the correlation between Features and Classes.
-        # Submatrix: corr[:D, D:] -> Shape (D, C)
-        
-        # Simpler manual calculation to save memory/compute:
-        # Corr(X, Y) = Cov(X, Y) / (Std(X)*Std(Y))
-        # This can be vectorized.
-        
+        # Calculate Correlation: Cov(X, Y) / (Std(X)*Std(Y))
+        # X: Features (D), Y: One-hot Classes (C)
         print("Calculating feature correlations...")
+        y_onehot = label_binarize(all_labels, classes=range(num_classes)) # (N, C)
         features_centered = all_features - all_features.mean(axis=0)
         y_centered = y_onehot - y_onehot.mean(axis=0)
         

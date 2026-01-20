@@ -1,7 +1,7 @@
 # Renal Tumor Classification Pipeline: LITE Methods Paper
 
 ## 1. Project Overview
-This project implements a deep learning pipeline for automating the classification of renal tumors into distinct subtypes (the number of classes is inferred from `data/processed/classes.npy`, with a fallback default of 5). It supports **ResNet50** (Transfer Learning), a baseline **ViT-B/16**, and **GSViT** (Global-Local Transformer). The pipeline is designed to be robust, handling class imbalance and varying image qualities through advanced preprocessing and loss functions.
+This project implements a deep learning pipeline for automating the classification of renal tumors into distinct subtypes (the number of classes is inferred from `data/processed/classes.npy`). It supports **ResNet50** (Transfer Learning), a baseline **ViT-B/16**, and **GSViT** (Global-Local Transformer). The pipeline is designed to be robust, handling class imbalance and varying image qualities through advanced preprocessing and loss functions.
 
 ## 2. Methodology
 
@@ -51,14 +51,18 @@ All figures are saved under `analysis/{model}/`:
 
 ### Key Scripts
 *   **`run.sh`**: The master orchestration script. Runs: Preprocessing -> ResNet Train/Eval -> ViT Train/Eval -> GSViT Train/Eval (if weights exist).
-*   **`main.py`**: The central entry point. Handles argument parsing and dispatches tasks to other modules.
-    *   `python main.py --mode preprocess`: Runs data cleaning and splitting.
-    *   `python main.py --mode train --model_type [resnet|vit|gsvit]`: Trains the specified model (default `--epochs 10`).
-    *   `python main.py --mode evaluate --model_type [resnet|vit|gsvit]`: Evaluates the best saved model on the test set.
+*   **`main.py`**: The central entry point. Handles argument parsing and dispatches tasks to other modules. Values in `config.ini` are used as defaults.
+*   **`config.ini`**: Configuration file for hyperparameters (epochs, batch size, learning rate), model paths, and data settings.
 *   **`dataset.py`**: Defines the `TumorDataset` class, managing image loading, border removal, and transforms.
 *   **`train.py`**: Contains the training loop, including metric tracking, checkpointing, and sampler logic.
 *   **`models.py`**: Defines the classes `ResNet50_Classifier`, `ViT_Classifier`, and `GSViT_Classifier`.
 *   **`evaluate.py`**: Handles metric calculation (Acc, F1, AUPRC) and plotting.
+
+### Configuration
+All hyperparameters and file paths are defined in `config.ini`. Modify this file to change:
+*   **Hyperparameters**: `batch_size`, `epochs`, `learning_rate`, `weight_decay`, `patience`.
+*   **Model Config**: `model_type`, `gsvit_path`.
+*   **Data Config**: `data_dir`, `upsample` (class balancing).
 
 ### How to Run
 1.  **Prepare Environment**: Ensure dependencies in `requirements.txt` are installed.

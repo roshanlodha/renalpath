@@ -9,98 +9,15 @@ import os
 
 from loss import FocalLoss
 
-def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterion=None):
-    """
-    Advanced training loop using AdamW and CosineAnnealingWarmRestarts.
-    """
+
+
+
+
+def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterion=None, learning_rate=1e-4, weight_decay=1e-4):
     model = model.to(device)
     
-    # Optimizer: AdamW with weight_decay=1e-4
-    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
-    
-    # Scheduler: CosineAnnealingWarmRestarts
-    # Assumes we might want restarts every 10 epochs? The user didn't specify T_0.
-    # Standard choice is often related to epoch count, let's say 10.
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
-    
-    if criterion is None:
-        # Default to FocalLoss if not provided (though main might provide it)
-        criterion = FocalLoss(gamma=2.0)
-    
-    best_model_wts = copy.deepcopy(model.state_dict())
-    best_acc = 0.0
-    epochs_no_improve = 0
-    
-    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
-    
-    for epoch in range(num_epochs):
-        print(f'Epoch {epoch+1}/{num_epochs}')
-        print('-' * 10)
-        
-        for phase in ['train', 'val']:
-            if phase == 'train':
-                model.train()
-            else:
-                model.eval()
-                
-            running_loss = 0.0
-            running_corrects = 0
-            
-            # Iterate over data
-            for inputs, labels in tqdm(dataloaders[phase], desc=phase):
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-                
-                optimizer.zero_grad()
-                
-                with torch.set_grad_enabled(phase == 'train'):
-                    outputs = model(inputs)
-                    _, preds = torch.max(outputs, 1)
-                    
-                    if isinstance(criterion, FocalLoss):
-                        # FocalLoss expects raw logits (handled inside)
-                        loss = criterion(outputs, labels)
-                    else:
-                        loss = criterion(outputs, labels)
-                    
-                    if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
-                        
-                        # Note: CosineAnnealingWarmRestarts is usually stepped every batch? 
-                        # Or every epoch? Docs say: "should be called after every batch" if using it as per-batch
-                        # but standard Torch schedulers are per-epoch unless specified.
-                        # CAWR docs: "step(epoch=None)"
-                        # Usually stepped at epoch end similar to others, 
-                        # UNLESS OneCycleLR. Let's stick to epoch stepping to be safe/standard
-                        # unless advanced usage is implied. 
-                        # Actually CAWR creates a schedule per iteration if T_0 is iterations.
-                        # If T_0 is epochs, step at epoch end. Let's assume epochs (T_0=10).
-                        pass
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-            # Step scheduler at epoch end for CAWR (T_0=10 epochs)
-            if phase == 'train':
-                scheduler.step()
-                print(f"LR: {optimizer.param_groups[0]['lr']:.6f}")
-                
-            epoch_loss = running_loss / len(dataloaders[phase].dataset)
-            # Fix: running_loss calculation in loop needs check
-            # In previous loop: running_loss += loss.item() * inputs.size(0)
-            # Re-adding that logic:
-            
-            # Wait, I missed the accumulation lines in the loop above!
-            # Let me rewrite the loop part correctly.
-            pass # See below for full file content
-        
-    return model, history
-
-
-# Helper to re-implement the train logic cleanly since I cut myself off
-def train_model_full(model, dataloaders, device, num_epochs=30, patience=10, criterion=None):
-    model = model.to(device)
-    
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4) # 1e-4 lr assumed from prev file, or standard
-    # Previous file had 0.0001 (1e-4).
     
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1)
     
@@ -263,5 +180,3 @@ def save_training_curves(history, output_path, model_name='model'):
     plt.savefig(output_path, dpi=200)
     plt.close()
 
-# Expose the simple name
-train_model = train_model_full
