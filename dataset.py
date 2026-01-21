@@ -126,14 +126,33 @@ def get_transforms(mode='train', model_name='resnet'):
     resize_size = (224, 224) 
 
     if mode == 'train':
-        transform = transforms.Compose([
+        aug_ops = [
             transforms.Resize(resize_size),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.25, hue=0.08),
+        ]
+
+        # Best-effort stronger augmentation (depends on torchvision version)
+        if hasattr(transforms, "RandAugment"):
+            aug_ops.append(transforms.RandAugment(num_ops=2, magnitude=9))
+        if hasattr(transforms, "RandomAutocontrast"):
+            aug_ops.append(transforms.RandomAutocontrast(p=0.2))
+        if hasattr(transforms, "RandomEqualize"):
+            aug_ops.append(transforms.RandomEqualize(p=0.1))
+        if hasattr(transforms, "GaussianBlur"):
+            aug_ops.append(transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.15))
+
+        aug_ops.extend([
             transforms.ToTensor(),
-            transforms.Normalize(mean, std)
+            transforms.Normalize(mean, std),
         ])
+
+        # RandomErasing expects tensors; apply after normalization
+        if hasattr(transforms, "RandomErasing"):
+            aug_ops.append(transforms.RandomErasing(p=0.25, scale=(0.02, 0.15), ratio=(0.3, 3.3), value='random'))
+
+        transform = transforms.Compose(aug_ops)
     else:
         transform = transforms.Compose([
             transforms.Resize(resize_size),

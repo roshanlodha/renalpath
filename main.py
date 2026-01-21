@@ -1,6 +1,7 @@
 import argparse
 import os
 import torch
+import torch.nn as nn
 import configparser
 from torch.utils.data import DataLoader
 import numpy as np
@@ -67,9 +68,20 @@ def main():
         defaults['patience'] = config.getint('Hyperparameters', 'patience', fallback=10)
         defaults['num_workers'] = config.getint('Hyperparameters', 'num_workers', fallback=4)
         defaults['seed'] = config.getint('Hyperparameters', 'seed', fallback=42)
+
+        # Small-data fine-tuning knobs
+        defaults['head_lr'] = config.getfloat('Hyperparameters', 'head_lr', fallback=1e-3)
+        defaults['backbone_lr'] = config.getfloat('Hyperparameters', 'backbone_lr', fallback=1e-5)
+        defaults['freeze_backbone_epochs'] = config.getint('Hyperparameters', 'freeze_backbone_epochs', fallback=5)
+        defaults['unfreeze_last_n'] = config.getint('Hyperparameters', 'unfreeze_last_n', fallback=1)
+        defaults['grad_clip_norm'] = config.getfloat('Hyperparameters', 'grad_clip_norm', fallback=1.0)
+        defaults['label_smoothing'] = config.getfloat('Hyperparameters', 'label_smoothing', fallback=0.1)
+        defaults['loss'] = config.get('Hyperparameters', 'loss', fallback='ce')
+        defaults['focal_gamma'] = config.getfloat('Hyperparameters', 'focal_gamma', fallback=1.5)
         
         defaults['model_type'] = config.get('Model', 'model_type', fallback='resnet')
         defaults['gsvit_path'] = config.get('Model', 'gsvit_path', fallback='models/GSViT.pkl')
+        defaults['resnet_variant'] = config.get('Model', 'resnet_variant', fallback='18')
         
         defaults['data_dir'] = config.get('Data', 'data_dir', fallback='data')
         defaults['processed_dir'] = config.get('Data', 'processed_dir', fallback=os.path.join(defaults['data_dir'], 'processed'))
@@ -87,6 +99,15 @@ def main():
             'train_test_split': 0.7, 'val_fraction': 0.1,
             'binarization': None,
             'seed': 42,
+            'head_lr': 1e-3,
+            'backbone_lr': 1e-5,
+            'freeze_backbone_epochs': 5,
+            'unfreeze_last_n': 1,
+            'grad_clip_norm': 1.0,
+            'label_smoothing': 0.1,
+            'loss': 'ce',
+            'focal_gamma': 1.5,
+            'resnet_variant': '18',
         }
 
     parser = argparse.ArgumentParser(description='Tumor Classification Pipeline')
@@ -227,10 +248,10 @@ def main():
 
     # Model initialization
     if args.model_type == 'resnet':
-        model = ResNet50_Classifier(num_classes=num_classes)
+        model = ResNet50_Classifier(num_classes=num_classes, variant=defaults.get('resnet_variant', '50'), freeze_backbone=True)
         model_name_str = 'resnet'
     elif args.model_type == 'vit':
-        model = ViT_Classifier(num_classes=num_classes)
+        model = ViT_Classifier(num_classes=num_classes, freeze_backbone=True)
         model_name_str = 'vit'
     else:
         model = GSViT_Classifier(args.gsvit_path, num_classes=num_classes)
@@ -299,8 +320,14 @@ def main():
             'val': val_loader
         }
         
-        # Loss: Class-balanced focal loss
-        criterion = FocalLoss(alpha=class_weights.tolist(), gamma=2.0)
+        # Loss: default to label-smoothed CE for tiny-data generalization.
+        # You can switch back to focal via config.ini: loss = focal
+        loss_name = str(defaults.get('loss', 'ce')).strip().lower()
+        if loss_name == 'focal':
+            criterion = FocalLoss(alpha=class_weights.tolist(), gamma=float(defaults.get('focal_gamma', 1.5)))
+        else:
+            weight_t = torch.tensor(class_weights, dtype=torch.float32, device=device)
+            criterion = nn.CrossEntropyLoss(weight=weight_t, label_smoothing=float(defaults.get('label_smoothing', 0.1)))
         
         model, history = train_model(
             model, 
@@ -310,7 +337,12 @@ def main():
             criterion=criterion,
             learning_rate=args.lr,
             weight_decay=args.weight_decay,
-            patience=args.patience
+            patience=args.patience,
+            head_lr=float(defaults.get('head_lr', args.lr)),
+            backbone_lr=float(defaults.get('backbone_lr', args.lr * 0.1)),
+            freeze_backbone_epochs=int(defaults.get('freeze_backbone_epochs', 0)),
+            unfreeze_last_n=int(defaults.get('unfreeze_last_n', 1)),
+            grad_clip_norm=float(defaults.get('grad_clip_norm', 1.0)),
         )
         
         # Save model

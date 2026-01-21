@@ -11,17 +11,89 @@ from sklearn.metrics import balanced_accuracy_score
 
 from loss import FocalLoss
 
+def _iter_trainable_params(module: nn.Module):
+    for p in module.parameters():
+        if p.requires_grad:
+            yield p
 
 
+def _split_backbone_and_head_params(model: nn.Module):
+    """Best-effort split for param groups (backbone vs head).
+
+    Works with this repo's ResNet50_Classifier/ViT_Classifier and falls back
+    to treating everything as a single group.
+    """
+    backbone_params = []
+    head_params = []
+
+    # ResNet wrapper
+    if hasattr(model, "backbone") and hasattr(model, "classifier"):
+        backbone_params = list(model.backbone.parameters())
+        head_params = list(model.classifier.parameters())
+        return backbone_params, head_params
+
+    # ViT wrapper
+    if hasattr(model, "model") and hasattr(model.model, "heads"):
+        head_params = list(model.model.heads.parameters())
+        head_ids = {id(p) for p in head_params}
+        backbone_params = [p for p in model.model.parameters() if id(p) not in head_ids]
+        return backbone_params, head_params
+
+    # Fallback
+    return list(model.parameters()), []
 
 
-def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterion=None, learning_rate=1e-4, weight_decay=1e-4):
+def train_model(
+    model,
+    dataloaders,
+    device,
+    num_epochs=30,
+    patience=10,
+    criterion=None,
+    learning_rate=1e-4,
+    weight_decay=1e-4,
+    *,
+    head_lr: float | None = None,
+    backbone_lr: float | None = None,
+    freeze_backbone_epochs: int = 0,
+    unfreeze_last_n: int = 1,
+    grad_clip_norm: float | None = 1.0,
+):
     model = model.to(device)
-    
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1)
+    # If caller provides head/backbone LR, use param groups.
+    use_param_groups = head_lr is not None or backbone_lr is not None
+    if head_lr is None:
+        head_lr = learning_rate
+    if backbone_lr is None:
+        # Conservative default for fine-tuning with tiny datasets
+        backbone_lr = min(learning_rate, head_lr) * 0.1
+
+    if freeze_backbone_epochs > 0 and hasattr(model, "freeze_backbone"):
+        model.freeze_backbone()
+
+    if use_param_groups:
+        backbone_params, head_params = _split_backbone_and_head_params(model)
+        # Only optimize trainable params (freeze sets requires_grad=False)
+        param_groups = []
+        if backbone_params:
+            param_groups.append({"params": [p for p in backbone_params if p.requires_grad], "lr": backbone_lr})
+        if head_params:
+            param_groups.append({"params": [p for p in head_params if p.requires_grad], "lr": head_lr})
+        if not param_groups:
+            param_groups = [{"params": list(_iter_trainable_params(model)), "lr": learning_rate}]
+        optimizer = optim.AdamW(param_groups, weight_decay=weight_decay)
+    else:
+        optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+    # For small datasets, plateau scheduling is usually more stable than cosine restarts.
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=0.5,
+        patience=2,
+        threshold=1e-4,
+    )
     
     if criterion is None:
         criterion = FocalLoss(gamma=2.0)
@@ -42,6 +114,24 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
     for epoch in range(num_epochs):
         print(f'Epoch {epoch+1}/{num_epochs}')
         print('-' * 10)
+
+        # Two-stage fine-tuning: unfreeze some backbone blocks after head-only warmup.
+        if freeze_backbone_epochs > 0 and epoch == int(freeze_backbone_epochs):
+            if hasattr(model, "unfreeze_last_blocks"):
+                print(f"Unfreezing last {int(unfreeze_last_n)} backbone block(s)...")
+                model.unfreeze_last_blocks(n=int(unfreeze_last_n))
+            else:
+                print("Model has no 'unfreeze_last_blocks'; continuing without unfreezing.")
+
+            # If using param groups, ensure newly-trainable params are included.
+            if use_param_groups:
+                backbone_params, head_params = _split_backbone_and_head_params(model)
+                new_groups = []
+                if backbone_params:
+                    new_groups.append({"params": [p for p in backbone_params if p.requires_grad], "lr": backbone_lr})
+                if head_params:
+                    new_groups.append({"params": [p for p in head_params if p.requires_grad], "lr": head_lr})
+                optimizer = optim.AdamW(new_groups, weight_decay=weight_decay)
         
         for phase in ['train', 'val']:
             if phase == 'train':
@@ -71,6 +161,8 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
                     
                     if phase == 'train':
                         loss.backward()
+                        if grad_clip_norm is not None and float(grad_clip_norm) > 0:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
                         optimizer.step()
                 
                 running_loss += loss.item() * batch_size
@@ -80,8 +172,8 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
                 all_phase_preds.extend(preds.detach().cpu().numpy().tolist())
                 all_phase_labels.extend(labels.detach().cpu().numpy().tolist())
             
-            if phase == 'train':
-                scheduler.step()
+            if phase == 'val':
+                scheduler.step(epoch_bal_acc)
                 
             if running_samples == 0:
                 epoch_loss = 0.0

@@ -5,12 +5,28 @@ from pathlib import Path
 import sys
 
 class ResNet50_Classifier(nn.Module):
-    def __init__(self, num_classes=5, pretrained=True):
+    def __init__(self, num_classes=5, pretrained=True, variant: str = "50", freeze_backbone: bool = False):
         super(ResNet50_Classifier, self).__init__()
-        
+
+        variant = str(variant)
+        # ConfigParser does not strip inline comments by default; be forgiving.
+        for sep in ("#", ";"):
+            if sep in variant:
+                variant = variant.split(sep, 1)[0]
+        variant = variant.strip()
+        if variant not in {"18", "34", "50"}:
+            raise ValueError("ResNet variant must be one of: '18', '34', '50'")
+
         # Load backbone
-        weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
-        self.backbone = models.resnet50(weights=weights)
+        if variant == "18":
+            weights = models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+            self.backbone = models.resnet18(weights=weights)
+        elif variant == "34":
+            weights = models.ResNet34_Weights.IMAGENET1K_V1 if pretrained else None
+            self.backbone = models.resnet34(weights=weights)
+        else:
+            weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
+            self.backbone = models.resnet50(weights=weights)
         
         # Replace fc layer with Identity to get features
         in_features = self.backbone.fc.in_features
@@ -24,6 +40,28 @@ class ResNet50_Classifier(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(512, num_classes)
         )
+
+        if freeze_backbone:
+            self.freeze_backbone()
+
+    def freeze_backbone(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        for param in self.classifier.parameters():
+            param.requires_grad = True
+
+    def unfreeze_last_blocks(self, n: int = 1):
+        """Unfreezes the last N residual stages (layer4, layer3, ...)."""
+        n = int(n)
+        if n <= 0:
+            return
+        blocks = []
+        for name in ["layer4", "layer3", "layer2", "layer1"]:
+            if hasattr(self.backbone, name):
+                blocks.append(getattr(self.backbone, name))
+        for block in blocks[:n]:
+            for param in block.parameters():
+                param.requires_grad = True
         
     def forward(self, x, return_features=False):
         features = self.backbone(x)
@@ -48,8 +86,37 @@ class ViT_Classifier(nn.Module):
             raise RuntimeError("Unexpected ViT head structure; cannot replace classifier head.")
 
         if freeze_backbone:
-            for param in self.model.parameters():
-                param.requires_grad = False
+            self.freeze_backbone()
+
+    def freeze_backbone(self):
+        for param in self.model.parameters():
+            param.requires_grad = False
+        # Always leave head trainable
+        if hasattr(self.model, "heads"):
+            for param in self.model.heads.parameters():
+                param.requires_grad = True
+
+    def unfreeze_last_blocks(self, n: int = 2):
+        """Unfreezes the last N encoder layers (best-effort across torchvision versions)."""
+        n = int(n)
+        if n <= 0:
+            return
+
+        # Torchvision ViT: model.encoder.layers is a ModuleList
+        if hasattr(self.model, "encoder") and hasattr(self.model.encoder, "layers"):
+            layers = self.model.encoder.layers
+            try:
+                total = len(layers)
+            except TypeError:
+                total = None
+
+            if total is not None and total > 0:
+                for layer in list(layers)[max(0, total - n):]:
+                    for param in layer.parameters():
+                        param.requires_grad = True
+
+        # Keep the head trainable
+        if hasattr(self.model, "heads"):
             for param in self.model.heads.parameters():
                 param.requires_grad = True
 
