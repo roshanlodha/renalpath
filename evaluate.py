@@ -30,7 +30,8 @@ def evaluate_model(
     Evaluates the model and generates specific plots:
     1. Confusion Matrix (confusion.png)
     2. AUPRC Bar Plot (auprc.png)
-    3. Feature Correlation Heatmap (feature_corr.png) [GSViT/ViT]
+    3. AUROC Bar Plot (auroc.png)
+    4. Feature Correlation Heatmap (feature_corr.png) [GSViT/ViT]
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -116,24 +117,43 @@ def evaluate_model(
     plt.close(fig)
     print(f"Saved Confusion Matrix to {cm_path}")
     
-    # --- Plot 2: AUPRC Bar Plot ---
-    from sklearn.metrics import average_precision_score
+    # --- Plot 2: AUPRC Bar Plot & AUROC Plot ---
+    from sklearn.metrics import average_precision_score, roc_auc_score
     
     y_test_bin = label_binarize(all_labels, classes=range(num_classes))
     auprc_scores = []
+    auroc_scores = []
     
     # Handle single class case or missing classes if necessary, but assuming splits are good
     if y_test_bin.shape[1] == num_classes:
         for i in range(num_classes):
+            # AUPRC
             ap = average_precision_score(y_test_bin[:, i], all_probs[:, i])
             auprc_scores.append(ap)
             print(f"Class {class_names[i]} AUPRC: {ap:.4f}")
             
+            # AUROC
+            auc = roc_auc_score(y_test_bin[:, i], all_probs[:, i])
+            auroc_scores.append(auc)
+            print(f"Class {class_names[i]} AUROC: {auc:.4f}")
+            
         x = np.arange(num_classes)
         colors = plt.get_cmap('viridis')(np.linspace(0, 1, num_classes))
 
+        # === AUPRC Plot ===
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.bar(x, auprc_scores, color=colors, label='AUPRC')
+        bars = ax.bar(x, auprc_scores, color=colors, label='AUPRC')
+        
+        # Add numerical values above bars
+        for bar, score in zip(bars, auprc_scores):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.01,
+                f'{score:.2f}',
+                ha='center',
+                va='bottom',
+                fontsize=10
+            )
 
         if train_class_prevalence is not None and len(train_class_prevalence) == num_classes:
             ax.bar(
@@ -149,17 +169,48 @@ def evaluate_model(
         ax.set_title(f'AUPRC per Class ({model_name})')
         ax.set_ylabel('Average Precision Score')
         ax.set_xlabel('Cell Type')
-        ax.set_ylim(0, 1.0)
+        ax.set_ylim(0, 1.1)
         ax.set_xticks(x, class_names, rotation=45, ha='right')
-        ax.legend()
+        ax.legend(loc='lower left')
 
         auprc_path = os.path.join(output_dir, 'auprc.png')
         fig.tight_layout()
         fig.savefig(auprc_path, dpi=200)
         plt.close(fig)
         print(f"Saved AUPRC Plot to {auprc_path}")
+        
+        # === AUROC Plot ===
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bars = ax.bar(x, auroc_scores, color=colors, label='AUROC')
+        
+        # Add numerical values above bars
+        for bar, score in zip(bars, auroc_scores):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.01,
+                f'{score:.2f}',
+                ha='center',
+                va='bottom',
+                fontsize=10
+            )
+            
+        # Baseline for AUROC is 0.5
+        ax.axhline(y=0.5, color='black', linestyle='--', linewidth=2, label='Random Guess (0.5)')
+
+        ax.set_title(f'AUROC per Class ({model_name})')
+        ax.set_ylabel('AUROC Score')
+        ax.set_xlabel('Cell Type')
+        ax.set_ylim(0, 1.1)
+        ax.set_xticks(x, class_names, rotation=45, ha='right')
+        ax.legend(loc='lower left')
+
+        auroc_path = os.path.join(output_dir, 'auroc.png')
+        fig.tight_layout()
+        fig.savefig(auroc_path, dpi=200)
+        plt.close(fig)
+        print(f"Saved AUROC Plot to {auroc_path}")
     else:
-        print("Skipping AUPRC due to class mismatch in binarization.")
+        print("Skipping AUPRC/AUROC due to class mismatch in binarization.")
 
     # --- Plot 3: Feature Correlation Heatmap (GSViT/ViT) ---
     if model_name in {'gsvit', 'vit'} and len(all_features) > 0:
