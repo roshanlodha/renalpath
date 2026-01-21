@@ -57,16 +57,19 @@ def main():
         defaults['processed_dir'] = config.get('Data', 'processed_dir', fallback=os.path.join(defaults['data_dir'], 'processed'))
         defaults['metadata_csv'] = config.get('Data', 'metadata_csv', fallback=os.path.join(defaults['data_dir'], 'metadata.csv'))
         defaults['upsample'] = config.getboolean('Data', 'upsample', fallback=True)
+        defaults['binarization'] = config.get('Data', 'binarization', fallback=None)
     else:
         # Hardcoded defaults if no config
         defaults = {
             'batch_size': 32, 'epochs': 10, 'learning_rate': 1e-4, 'weight_decay': 1e-4, 'patience': 10, 'num_workers': 4,
             'model_type': 'resnet', 'gsvit_path': 'models/GSViT.pkl',
-            'data_dir': 'data', 'processed_dir': 'data/processed', 'metadata_csv': 'data/metadata.csv', 'upsample': True
+            'data_dir': 'data', 'processed_dir': 'data/processed', 'metadata_csv': 'data/metadata.csv', 'upsample': True,
+            'binarization': None
         }
 
     parser = argparse.ArgumentParser(description='Tumor Classification Pipeline')
     parser.add_argument('--mode', type=str, choices=['preprocess', 'train', 'evaluate', 'dry_run'], required=True, help='Pipeline mode')
+    parser.add_argument('--binary', action='store_true', help='Enable binary classification mode (RCC vs Other)')
     parser.add_argument('--model_type', type=str, choices=['resnet', 'vit', 'gsvit'], default=defaults['model_type'], help='Model architecture')
     parser.add_argument('--data_dir', type=str, default=defaults['data_dir'], help='Path to data directory')
     parser.add_argument('--processed_dir', type=str, default=defaults['processed_dir'], help='Path to processed data')
@@ -82,7 +85,19 @@ def main():
     parser.add_argument('--patience', type=int, default=defaults['patience'], help='Early stopping patience')
     
     args = parser.parse_args()
-    
+
+    # Handle Binary Mode Defaults
+    if args.binary:
+        # If user didn't override the default processed_dir, switch to binary one
+        if args.processed_dir == defaults['processed_dir']:
+            args.processed_dir = args.processed_dir.rstrip('/') + '_binary'
+        
+        # If user didn't override the default output_dir, switch to binary one
+        if args.output_dir == 'models':
+             args.output_dir = os.path.join('models', 'binary')
+        
+        print(f"Binary Mode Enabled. Processed Dir: {args.processed_dir}, Output Dir: {args.output_dir}")
+
     # Ensure processed_dir exists for split processing
     if not os.path.exists(args.processed_dir) and args.mode == 'preprocess':
          os.makedirs(args.processed_dir, exist_ok=True)
@@ -138,6 +153,29 @@ def main():
 
     if args.mode == 'preprocess':
         df = preprocess_images(args.data_dir, args.processed_dir, args.metadata_csv)
+        
+        if args.binary:
+            raw_bin_list = defaults.get('binarization')
+            if raw_bin_list:
+                # Parse the list string: e.g. "['Chromophobe' 'Clear_cell']"
+                # Remove brackets and split
+                clean_str = raw_bin_list.replace('[', '').replace(']', '').replace("'", "").replace('"', "")
+                # Split by space or comma
+                if ',' in clean_str:
+                     rcc_classes = [x.strip() for x in clean_str.split(',') if x.strip()]
+                else:
+                     rcc_classes = [x.strip() for x in clean_str.split() if x.strip()]
+                
+                print(f"Binarizing classes. RCC Group: {rcc_classes}")
+                
+                def binarize_label(label):
+                    return 'RCC' if label in rcc_classes else 'Other'
+                
+                df['Class'] = df['Class'].apply(binarize_label)
+                print(f"Binarization complete. Class counts:\n{df['Class'].value_counts()}")
+            else:
+                print("Warning: Binary mode enabled but 'binarization' list missing in config.")
+
         create_splits(df, args.processed_dir)
         return
 
@@ -200,7 +238,7 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_{args.model_type}.pth'))
 
-        analysis_dir = os.path.join('analysis', model_name_str)
+        analysis_dir = os.path.join('analysis', model_name_str + ('_binary' if args.binary else ''))
         os.makedirs(analysis_dir, exist_ok=True)
         save_training_curves(history, os.path.join(analysis_dir, 'training_curves.png'), model_name=model_name_str)
         
@@ -218,7 +256,7 @@ def main():
         model.load_state_dict(torch.load(model_path, map_location=device))
         
         # Output analysis
-        analysis_dir = os.path.join('analysis', model_name_str)
+        analysis_dir = os.path.join('analysis', model_name_str + ('_binary' if args.binary else ''))
         # Load train prevalence for balanced accuracy reference
         train_prevalence = None
         train_csv = os.path.join(args.processed_dir, 'train_split.csv')
