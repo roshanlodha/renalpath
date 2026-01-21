@@ -102,7 +102,7 @@ class TumorDataset(Dataset):
         if self.model_name == 'gsvit':
             # Tensor is C, H, W (RGB). Convert to BGR by flipping channels.
             # RGB indices: 0, 1, 2 -> BGR indices: 2, 1, 0
-            image_pil = image_pil[[2, 1, 0], :, :]
+            image_pil = image_pil[[2, 1, 0], :, :].contiguous()
 
         # Label encoding
         if 'label_encoded' in self.data.columns:

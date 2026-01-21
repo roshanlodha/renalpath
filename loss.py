@@ -40,6 +40,8 @@ class FocalLoss(nn.Module):
                 # We need to pick the alpha corresponding to the target class
                 if not isinstance(self.alpha, torch.Tensor):
                     self.alpha = torch.tensor(self.alpha).to(inputs.device)
+                else:
+                    self.alpha = self.alpha.to(inputs.device)
                 alpha_factor = self.alpha[targets]
         else:
             alpha_factor = 1.0

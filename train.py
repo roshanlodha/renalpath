@@ -73,7 +73,7 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
                 epoch_acc = torch.tensor(0.0, device=device)
             else:
                 epoch_loss = running_loss / running_samples
-                epoch_acc = running_corrects.double() / running_samples
+                epoch_acc = running_corrects.float() / running_samples
             
             print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
             
@@ -127,7 +127,7 @@ def get_weighted_dataloader(
         num_samples = len(sample_weights)
 
     sampler = WeightedRandomSampler(
-        weights=torch.from_numpy(sample_weights).type(torch.DoubleTensor),
+        weights=torch.from_numpy(sample_weights).type(torch.FloatTensor),
         num_samples=num_samples,
         replacement=True
     )

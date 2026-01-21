@@ -20,10 +20,11 @@ def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def load_config(config_path='config.ini'):
@@ -58,6 +59,8 @@ def main():
         defaults['processed_dir'] = config.get('Data', 'processed_dir', fallback=os.path.join(defaults['data_dir'], 'processed'))
         defaults['metadata_csv'] = config.get('Data', 'metadata_csv', fallback=os.path.join(defaults['data_dir'], 'metadata.csv'))
         defaults['upsample'] = config.getboolean('Data', 'upsample', fallback=True)
+        defaults['train_test_split'] = config.getfloat('Data', 'train_test_split', fallback=0.7)
+        defaults['val_fraction'] = config.getfloat('Data', 'val_fraction', fallback=0.1)
         defaults['binarization'] = config.get('Data', 'binarization', fallback=None)
     else:
         # Hardcoded defaults if no config
@@ -65,6 +68,7 @@ def main():
             'batch_size': 32, 'epochs': 10, 'learning_rate': 1e-4, 'weight_decay': 1e-4, 'patience': 10, 'num_workers': 4,
             'model_type': 'resnet', 'gsvit_path': 'models/GSViT.pkl',
             'data_dir': 'data', 'processed_dir': 'data/processed', 'metadata_csv': 'data/metadata.csv', 'upsample': True,
+            'train_test_split': 0.7, 'val_fraction': 0.1,
             'binarization': None
         }
 
@@ -103,7 +107,12 @@ def main():
     if not os.path.exists(args.processed_dir) and args.mode == 'preprocess':
          os.makedirs(args.processed_dir, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Using device: {device}")
     
     # Check classes if not preprocessing
@@ -177,7 +186,17 @@ def main():
             else:
                 print("Warning: Binary mode enabled but 'binarization' list missing in config.")
 
-        create_splits(df, args.processed_dir)
+        # Calculate val_fraction_of_trainval from absolute val_fraction
+        # if val_fraction is 0.1 and train_test_split is 0.7, 
+        # then val_fraction_of_trainval = 0.1 / 0.7
+        val_f_of_tv = defaults['val_fraction'] / defaults['train_test_split']
+
+        create_splits(
+            df, 
+            args.processed_dir, 
+            trainval_fraction=defaults['train_test_split'],
+            val_fraction_of_trainval=val_f_of_tv
+        )
         return
 
     # Model initialization
