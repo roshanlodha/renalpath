@@ -17,13 +17,17 @@ class TumorDataset(Dataset):
             mode (string): 'train' or 'val'/'test'.
             model_name (string): 'resnet', 'vit', or 'gsvit'.
         """
-        self.data = pd.read_csv(csv_file)
         self.root_dir = root_dir
         self.transform = transform
         self.mode = mode
         self.model_name = model_name
 
         # Prefer pre-computed label encoding from preprocessing for consistency across splits.
+        if isinstance(csv_file, str):
+            self.data = pd.read_csv(csv_file)
+        else:
+            self.data = csv_file
+
         if 'label_encoded' in self.data.columns:
             self.data['label_encoded'] = self.data['label_encoded'].astype(int)
             self.classes = None
@@ -83,7 +87,10 @@ class TumorDataset(Dataset):
             padding = (pad_w // 2, pad_h // 2, pad_w - (pad_w // 2), pad_h - (pad_h // 2))
             image_pil = transforms.Pad(padding, fill=0, padding_mode='constant')(image_pil)
             
-        image_pil = transforms.CenterCrop(target_size)(image_pil)
+        if self.mode == 'train':
+            image_pil = transforms.RandomCrop(target_size)(image_pil)
+        else:
+            image_pil = transforms.CenterCrop(target_size)(image_pil)
 
         # 4. Apply Transforms (Resize, Augmentations, etc.)
         if self.transform:

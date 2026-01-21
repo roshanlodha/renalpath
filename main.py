@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
 import random
+from sklearn.utils import resample
 
 from preprocess import preprocess_images, create_splits
 from dataset import TumorDataset, get_transforms
@@ -201,17 +202,51 @@ def main():
         train_csv = os.path.join(args.processed_dir, 'train_split.csv')
         val_csv = os.path.join(args.processed_dir, 'val_split.csv')
         
-        train_dataset = TumorDataset(train_csv, root_dir=args.processed_dir, transform=get_transforms('train', model_name_str), model_name=model_name_str)
+        # Load train data explicitly to handle upsampling
+        train_df = pd.read_csv(train_csv)
+        
+        if defaults['upsample']:
+            print("Upsampling minority classes...")
+            # Assuming 'label_encoded' is available from preprocessing, else use 'Class'
+            # If label_encoded is not there, we might need to map it, but TumorDataset handles that.
+            # Let's use 'Class' for generic resampling which is safer if label_encoded isn't there.
+            
+            # Use 'label_encoded' if present (preferred), else 'Class'
+            target_col = 'label_encoded' if 'label_encoded' in train_df.columns else 'Class'
+            
+            # Get counts
+            counts = train_df[target_col].value_counts()
+            max_count = counts.max()
+            
+            df_upsampled_list = []
+            for cls_val in counts.index:
+                df_class = train_df[train_df[target_col] == cls_val]
+                
+                if len(df_class) < max_count:
+                    df_class_upsampled = resample(
+                        df_class, 
+                        replace=True, 
+                        n_samples=max_count, 
+                        random_state=42
+                    )
+                    df_upsampled_list.append(df_class_upsampled)
+                else:
+                    df_upsampled_list.append(df_class)
+            
+            train_df = pd.concat(df_upsampled_list)
+            print(f"Upsampling complete. New training size: {len(train_df)}")
+
+        train_dataset = TumorDataset(train_df, root_dir=args.processed_dir, transform=get_transforms('train', model_name_str), model_name=model_name_str)
         val_dataset = TumorDataset(val_csv, root_dir=args.processed_dir, transform=get_transforms('val', model_name_str), model_name=model_name_str)
         
-        # Use WeightedRandomSampler for training if upsample is True
-        print(f"Upsampling enabled: {defaults['upsample']}")
-        train_loader = get_weighted_dataloader(
-            train_dataset, 
-            batch_size=args.batch_size, 
-            num_classes=num_classes, 
-            num_workers=defaults['num_workers'],
-            upsample_to_max=defaults['upsample']
+        print(f"Upsampling enabled (pre-dataset): {defaults['upsample']}")
+        
+        # Use standard DataLoader with shuffle=True, as upsampling is now in the data
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=defaults['num_workers']
         )
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=defaults['num_workers'])
         
