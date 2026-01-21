@@ -1,7 +1,7 @@
 # Renal Tumor Classification Pipeline: LITE Methods Paper
 
 ## 1. Project Overview
-This project implements a deep learning pipeline for automating the classification of renal tumors into distinct subtypes (the number of classes is inferred from `data/processed/classes.npy`). It supports **ResNet50** (Transfer Learning), a baseline **ViT-B/16**, and **GSViT** (Global-Local Transformer). The pipeline is designed to be robust, handling class imbalance and varying image qualities through advanced preprocessing and loss functions.
+This project implements a deep learning pipeline for automating the classification of renal tumors into distinct subtypes (the number of classes is inferred from `data/processed/classes.npy`). It supports **ResNet50** (Transfer Learning), a baseline **ViT-B/16**, and **GSViT** (General Surgery Vision Transformer).
 
 ## 2. Methodology
 
@@ -72,3 +72,8 @@ All hyperparameters and file paths are defined in `config.ini`. Modify this file
     ```
     Outputs (models) will be in `models/`.
     Plots and analysis figures will be in `analysis/{model}/`.
+
+## TODO
+- [ ] update REAMDE 
+- [x] ensure caching working
+- [x] ensure random seet working properly

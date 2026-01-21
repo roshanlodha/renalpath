@@ -84,4 +84,10 @@ fi
 echo "=========================================="
 echo "Pipeline Completed Successfully!"
 echo "Check 'analysis/' and 'models/' (including 'models/binary') for outputs."
+
+echo "=========================================="
+echo "Aggregating evaluation summaries..."
+./env/bin/python summarize.py
+if [ $? -ne 0 ]; then echo "Summarize failed!"; exit 1; fi
+
 echo "=========================================="

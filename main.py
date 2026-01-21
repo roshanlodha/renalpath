@@ -17,14 +17,31 @@ from loss import FocalLoss
 
 def set_seed(seed=42):
     """Sets the seed for reproducibility."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+
+    # Best-effort determinism. Some ops (especially on MPS) may still be
+    # nondeterministic; warn_only avoids hard crashes.
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except TypeError:
+        # Older PyTorch
+        torch.use_deterministic_algorithms(True)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def _seed_worker(worker_id):
+    # Ensure numpy/python RNG are deterministic per worker.
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def load_config(config_path='config.ini'):
@@ -37,8 +54,6 @@ def load_config(config_path='config.ini'):
 
 
 def main():
-    set_seed(42)
-    
     # Load Config
     config = load_config()
     
@@ -51,6 +66,7 @@ def main():
         defaults['weight_decay'] = config.getfloat('Hyperparameters', 'weight_decay', fallback=1e-4)
         defaults['patience'] = config.getint('Hyperparameters', 'patience', fallback=10)
         defaults['num_workers'] = config.getint('Hyperparameters', 'num_workers', fallback=4)
+        defaults['seed'] = config.getint('Hyperparameters', 'seed', fallback=42)
         
         defaults['model_type'] = config.get('Model', 'model_type', fallback='resnet')
         defaults['gsvit_path'] = config.get('Model', 'gsvit_path', fallback='models/GSViT.pkl')
@@ -69,7 +85,8 @@ def main():
             'model_type': 'resnet', 'gsvit_path': 'models/GSViT.pkl',
             'data_dir': 'data', 'processed_dir': 'data/processed', 'metadata_csv': 'data/metadata.csv', 'upsample': True,
             'train_test_split': 0.7, 'val_fraction': 0.1,
-            'binarization': None
+            'binarization': None,
+            'seed': 42,
         }
 
     parser = argparse.ArgumentParser(description='Tumor Classification Pipeline')
@@ -83,6 +100,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default='models', help='Directory to save outputs')
     parser.add_argument('--batch_size', type=int, default=defaults['batch_size'], help='Batch size')
     parser.add_argument('--epochs', type=int, default=defaults['epochs'], help='Number of epochs')
+    parser.add_argument('--seed', type=int, default=defaults['seed'], help='Random seed for reproducibility')
+    parser.add_argument('--retrain', action='store_true', help='Force retraining even if a best checkpoint already exists')
     
     # Extra args not in previous CLI but useful to override
     parser.add_argument('--lr', type=float, default=defaults['learning_rate'], help='Learning rate')
@@ -90,6 +109,13 @@ def main():
     parser.add_argument('--patience', type=int, default=defaults['patience'], help='Early stopping patience')
     
     args = parser.parse_args()
+
+    # Seed everything after parsing so CLI/config can control it.
+    set_seed(args.seed)
+
+    # Generator for deterministic DataLoader shuffling.
+    dl_generator = torch.Generator()
+    dl_generator.manual_seed(args.seed)
 
     # Handle Binary Mode Defaults
     if args.binary:
@@ -213,69 +239,68 @@ def main():
     if args.mode == 'train':
         # Caching: Check if training is needed
         best_model_path = os.path.join(args.output_dir, f'best_{args.model_type}.pth')
-        if os.path.exists(best_model_path):
-             print(f"Trained model found at {best_model_path}. Skipping training. Delete file to retrain.")
-             pass   
+        if os.path.exists(best_model_path) and not args.retrain:
+            print(f"Trained model found at {best_model_path}. Skipping training. Use --retrain to retrain.")
+            return
+        if os.path.exists(best_model_path) and args.retrain:
+            print(f"Retraining requested (--retrain). Will overwrite existing checkpoint at {best_model_path}.")
 
         # Datasets
         train_csv = os.path.join(args.processed_dir, 'train_split.csv')
         val_csv = os.path.join(args.processed_dir, 'val_split.csv')
         
-        # Load train data explicitly to handle upsampling
+        # Load train data explicitly to compute class-balanced loss weights
         train_df = pd.read_csv(train_csv)
-        
-        if defaults['upsample']:
-            print("Upsampling minority classes...")
-            # Assuming 'label_encoded' is available from preprocessing, else use 'Class'
-            # If label_encoded is not there, we might need to map it, but TumorDataset handles that.
-            # Let's use 'Class' for generic resampling which is safer if label_encoded isn't there.
-            
-            # Use 'label_encoded' if present (preferred), else 'Class'
-            target_col = 'label_encoded' if 'label_encoded' in train_df.columns else 'Class'
-            
-            # Get counts
-            counts = train_df[target_col].value_counts()
-            max_count = counts.max()
-            
-            df_upsampled_list = []
-            for cls_val in counts.index:
-                df_class = train_df[train_df[target_col] == cls_val]
-                
-                if len(df_class) < max_count:
-                    df_class_upsampled = resample(
-                        df_class, 
-                        replace=True, 
-                        n_samples=max_count, 
-                        random_state=42
-                    )
-                    df_upsampled_list.append(df_class_upsampled)
-                else:
-                    df_upsampled_list.append(df_class)
-            
-            train_df = pd.concat(df_upsampled_list)
-            print(f"Upsampling complete. New training size: {len(train_df)}")
+
+        if 'label_encoded' in train_df.columns:
+            train_targets = train_df['label_encoded'].astype(int).to_numpy()
+        else:
+            # Fallback: map class strings to indices using the global class_names ordering.
+            class_to_idx = {str(c): i for i, c in enumerate(class_names)}
+            train_targets = train_df['Class'].map(lambda x: class_to_idx[str(x)]).astype(int).to_numpy()
+
+        class_counts = np.bincount(train_targets, minlength=num_classes)
+        # Inverse-frequency weights, normalized to have mean ~1.
+        class_weights = class_counts.sum() / (np.maximum(class_counts, 1) * num_classes)
 
         train_dataset = TumorDataset(train_df, root_dir=args.processed_dir, transform=get_transforms('train', model_name_str), model_name=model_name_str)
         val_dataset = TumorDataset(val_csv, root_dir=args.processed_dir, transform=get_transforms('val', model_name_str), model_name=model_name_str)
-        
-        print(f"Upsampling enabled (pre-dataset): {defaults['upsample']}")
-        
-        # Use standard DataLoader with shuffle=True, as upsampling is now in the data
-        train_loader = DataLoader(
-            train_dataset,
+
+        # Balance sampling if configured.
+        if defaults['upsample']:
+            print("Using weighted sampling to balance training batches...")
+            train_loader = get_weighted_dataloader(
+                train_dataset,
+                batch_size=args.batch_size,
+                num_classes=num_classes,
+                num_workers=defaults['num_workers'],
+                seed=args.seed,
+            )
+        else:
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=defaults['num_workers'],
+                worker_init_fn=_seed_worker,
+                generator=dl_generator,
+            )
+        val_loader = DataLoader(
+            val_dataset,
             batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=defaults['num_workers']
+            shuffle=False,
+            num_workers=defaults['num_workers'],
+            worker_init_fn=_seed_worker,
+            generator=dl_generator,
         )
-        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=defaults['num_workers'])
         
         dataloaders = {
             'train': train_loader,
             'val': val_loader
         }
         
-        # Loss: FocalLoss
-        criterion = FocalLoss(alpha=1, gamma=2.0)
+        # Loss: Class-balanced focal loss
+        criterion = FocalLoss(alpha=class_weights.tolist(), gamma=2.0)
         
         model, history = train_model(
             model, 
@@ -299,7 +324,14 @@ def main():
     elif args.mode == 'evaluate':
         test_csv = os.path.join(args.processed_dir, 'test_split.csv')
         test_dataset = TumorDataset(test_csv, root_dir=args.processed_dir, transform=get_transforms('val', model_name_str), model_name=model_name_str)
-        dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=defaults['num_workers'])
+        dataloader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=defaults['num_workers'],
+            worker_init_fn=_seed_worker,
+            generator=dl_generator,
+        )
         
         # Load best model
         model_path = os.path.join(args.output_dir, f'best_{args.model_type}.pth')

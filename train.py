@@ -7,6 +7,8 @@ import numpy as np
 import copy
 import os
 
+from sklearn.metrics import balanced_accuracy_score
+
 from loss import FocalLoss
 
 
@@ -25,10 +27,17 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
         criterion = FocalLoss(gamma=2.0)
         
     best_model_wts = copy.deepcopy(model.state_dict())
-    best_acc = 0.0
+    best_bal_acc = 0.0
     epochs_no_improve = 0
     
-    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
+    history = {
+        'train_loss': [],
+        'train_acc': [],
+        'train_bal_acc': [],
+        'val_loss': [],
+        'val_acc': [],
+        'val_bal_acc': [],
+    }
     
     for epoch in range(num_epochs):
         print(f'Epoch {epoch+1}/{num_epochs}')
@@ -43,6 +52,9 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
             running_loss = 0.0
             running_corrects = 0
             running_samples = 0
+
+            all_phase_preds = []
+            all_phase_labels = []
             
             for inputs, labels in tqdm(dataloaders[phase], desc=phase):
                 inputs = inputs.to(device)
@@ -64,6 +76,9 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
                 running_loss += loss.item() * batch_size
                 running_corrects += torch.sum(preds == labels.data)
                 running_samples += batch_size
+
+                all_phase_preds.extend(preds.detach().cpu().numpy().tolist())
+                all_phase_labels.extend(labels.detach().cpu().numpy().tolist())
             
             if phase == 'train':
                 scheduler.step()
@@ -71,18 +86,27 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
             if running_samples == 0:
                 epoch_loss = 0.0
                 epoch_acc = torch.tensor(0.0, device=device)
+                epoch_bal_acc = 0.0
             else:
                 epoch_loss = running_loss / running_samples
                 epoch_acc = running_corrects.float() / running_samples
+
+                # Balanced accuracy is mean recall across classes.
+                # Guard against missing classes in a split (sklearn handles this).
+                try:
+                    epoch_bal_acc = float(balanced_accuracy_score(all_phase_labels, all_phase_preds))
+                except ValueError:
+                    epoch_bal_acc = 0.0
             
-            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f} BalAcc: {epoch_bal_acc:.4f}')
             
             history[f'{phase}_loss'].append(epoch_loss)
             history[f'{phase}_acc'].append(epoch_acc.item())
+            history[f'{phase}_bal_acc'].append(epoch_bal_acc)
             
             if phase == 'val':
-                if epoch_acc > best_acc:
-                    best_acc = epoch_acc
+                if epoch_bal_acc > best_bal_acc:
+                    best_bal_acc = epoch_bal_acc
                     best_model_wts = copy.deepcopy(model.state_dict())
                     epochs_no_improve = 0
                 else:
@@ -92,7 +116,7 @@ def train_model(model, dataloaders, device, num_epochs=30, patience=10, criterio
             print(f'Early stopping triggered after {epoch+1} epochs')
             break
             
-    print(f'Best val Acc: {best_acc:4f}')
+    print(f'Best val Balanced Acc: {best_bal_acc:4f}')
     model.load_state_dict(best_model_wts)
     return model, history
 
@@ -103,6 +127,7 @@ def get_weighted_dataloader(
     num_workers=4,
     *,
     upsample_to_max=True,
+    seed: int | None = None,
 ):
     """
     Returns a DataLoader with WeightedRandomSampler.
@@ -131,12 +156,23 @@ def get_weighted_dataloader(
         num_samples=num_samples,
         replacement=True
     )
+
+    generator = None
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+
+    def _seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
     
     dataloader = DataLoader(
         dataset, 
         batch_size=batch_size, 
         sampler=sampler, 
-        num_workers=num_workers
+        num_workers=num_workers,
+        worker_init_fn=_seed_worker,
+        generator=generator,
     )
     
     return dataloader
@@ -146,7 +182,7 @@ def save_training_curves(history, output_path, model_name='model'):
     if not history:
         return
 
-    keys = ('train_loss', 'val_loss', 'train_acc', 'val_acc')
+    keys = ('train_loss', 'val_loss')
     if not all(k in history for k in keys):
         return
 
@@ -169,11 +205,17 @@ def save_training_curves(history, output_path, model_name='model'):
     plt.legend()
 
     plt.subplot(1, 2, 2)
-    plt.plot(epochs, history['train_acc'], label='Train')
-    plt.plot(epochs, history['val_acc'], label='Val')
+    if 'train_bal_acc' in history and 'val_bal_acc' in history:
+        plt.plot(epochs, history['train_bal_acc'], label='Train')
+        plt.plot(epochs, history['val_bal_acc'], label='Val')
+        plt.ylabel('Balanced Accuracy')
+        plt.title(f'Balanced Accuracy ({model_name})')
+    else:
+        plt.plot(epochs, history.get('train_acc', []), label='Train')
+        plt.plot(epochs, history.get('val_acc', []), label='Val')
+        plt.ylabel('Accuracy')
+        plt.title(f'Accuracy ({model_name})')
     plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.title(f'Accuracy ({model_name})')
     plt.legend()
 
     plt.tight_layout()

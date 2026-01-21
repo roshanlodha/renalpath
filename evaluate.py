@@ -4,6 +4,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
+import json
 from sklearn.metrics import (
     accuracy_score, 
     precision_recall_fscore_support, 
@@ -31,12 +32,16 @@ def evaluate_model(
     1. Confusion Matrix (confusion.png)
     2. AUPRC Bar Plot (auprc.png)
     3. AUROC Bar Plot (auroc.png)
+    4. ROC Curve (roc_curve.png) [binary only]
     4. Feature Correlation Heatmap (feature_corr.png) [GSViT/ViT]
     """
     os.makedirs(output_dir, exist_ok=True)
-    
-    model.eval()
+
+    # Move model to target device *before* calling eval(). Some third-party
+    # modules override train()/eval() and may cache tensors that won't be moved
+    # by .to(device) if created on CPU.
     model = model.to(device)
+    model.eval()
     
     all_preds = []
     all_labels = []
@@ -117,100 +122,179 @@ def evaluate_model(
     plt.close(fig)
     print(f"Saved Confusion Matrix to {cm_path}")
     
-    # --- Plot 2: AUPRC Bar Plot & AUROC Plot ---
-    from sklearn.metrics import average_precision_score, roc_auc_score
-    
-    y_test_bin = label_binarize(all_labels, classes=range(num_classes))
+    # --- Plot 2: AUPRC/AUROC Bar Plots ---
+    from sklearn.metrics import average_precision_score, roc_auc_score, roc_curve
+
+    # NOTE: sklearn's label_binarize returns shape (N, 1) for binary problems.
+    # We use a true one-hot encoding to keep a consistent (N, C) shape.
+    if num_classes == 2:
+        y_onehot = np.eye(2, dtype=int)[all_labels.astype(int)]
+    else:
+        y_onehot = label_binarize(all_labels, classes=list(range(num_classes)))
+
     auprc_scores = []
     auroc_scores = []
-    
-    # Handle single class case or missing classes if necessary, but assuming splits are good
-    if y_test_bin.shape[1] == num_classes:
-        for i in range(num_classes):
-            # AUPRC
-            ap = average_precision_score(y_test_bin[:, i], all_probs[:, i])
-            auprc_scores.append(ap)
+    for i in range(num_classes):
+        ap = np.nan
+        auc_val = np.nan
+        try:
+            ap = average_precision_score(y_onehot[:, i], all_probs[:, i])
+        except ValueError as e:
+            print(f"Skipping AUPRC for class {class_names[i]}: {e}")
+        try:
+            auc_val = roc_auc_score(y_onehot[:, i], all_probs[:, i])
+        except ValueError as e:
+            print(f"Skipping AUROC for class {class_names[i]}: {e}")
+
+        auprc_scores.append(ap)
+        auroc_scores.append(auc_val)
+
+        if not np.isnan(ap):
             print(f"Class {class_names[i]} AUPRC: {ap:.4f}")
-            
-            # AUROC
-            auc = roc_auc_score(y_test_bin[:, i], all_probs[:, i])
-            auroc_scores.append(auc)
-            print(f"Class {class_names[i]} AUROC: {auc:.4f}")
-            
-        x = np.arange(num_classes)
-        colors = plt.get_cmap('viridis')(np.linspace(0, 1, num_classes))
+        if not np.isnan(auc_val):
+            print(f"Class {class_names[i]} AUROC: {auc_val:.4f}")
 
-        # === AUPRC Plot ===
-        fig, ax = plt.subplots(figsize=(10, 6))
-        bars = ax.bar(x, auprc_scores, color=colors, label='AUPRC')
-        
-        # Add numerical values above bars
-        for bar, score in zip(bars, auprc_scores):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.01,
-                f'{score:.2f}',
-                ha='center',
-                va='bottom',
-                fontsize=10
-            )
+    x = np.arange(num_classes)
+    colors = plt.get_cmap('viridis')(np.linspace(0, 1, num_classes))
 
-        if train_class_prevalence is not None and len(train_class_prevalence) == num_classes:
-            ax.bar(
-                x,
-                train_class_prevalence,
-                fill=False,
-                edgecolor='black',
-                linewidth=2,
-                linestyle='--',
-                label='Train prevalence',
-            )
+    # === AUPRC Plot ===
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(x, np.nan_to_num(auprc_scores, nan=0.0), color=colors, label='AUPRC')
 
-        ax.set_title(f'AUPRC per Class ({model_name})')
-        ax.set_ylabel('Average Precision Score')
-        ax.set_xlabel('Cell Type')
-        ax.set_ylim(0, 1.1)
-        ax.set_xticks(x, class_names, rotation=45, ha='right')
-        ax.legend(loc='lower left')
+    for bar, score in zip(bars, auprc_scores):
+        label = 'NA' if np.isnan(score) else f'{score:.2f}'
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.01,
+            label,
+            ha='center',
+            va='bottom',
+            fontsize=10
+        )
 
-        auprc_path = os.path.join(output_dir, 'auprc.png')
-        fig.tight_layout()
-        fig.savefig(auprc_path, dpi=200)
-        plt.close(fig)
-        print(f"Saved AUPRC Plot to {auprc_path}")
-        
-        # === AUROC Plot ===
-        fig, ax = plt.subplots(figsize=(10, 6))
-        bars = ax.bar(x, auroc_scores, color=colors, label='AUROC')
-        
-        # Add numerical values above bars
-        for bar, score in zip(bars, auroc_scores):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.01,
-                f'{score:.2f}',
-                ha='center',
-                va='bottom',
-                fontsize=10
-            )
-            
-        # Baseline for AUROC is 0.5
-        ax.axhline(y=0.5, color='black', linestyle='--', linewidth=2, label='Random Guess (0.5)')
+    if train_class_prevalence is not None and len(train_class_prevalence) == num_classes:
+        ax.bar(
+            x,
+            train_class_prevalence,
+            fill=False,
+            edgecolor='black',
+            linewidth=2,
+            linestyle='--',
+            label='Train prevalence',
+        )
 
-        ax.set_title(f'AUROC per Class ({model_name})')
-        ax.set_ylabel('AUROC Score')
-        ax.set_xlabel('Cell Type')
-        ax.set_ylim(0, 1.1)
-        ax.set_xticks(x, class_names, rotation=45, ha='right')
-        ax.legend(loc='lower left')
+    ax.set_title(f'AUPRC per Class ({model_name})')
+    ax.set_ylabel('Average Precision Score')
+    ax.set_xlabel('Cell Type')
+    ax.set_ylim(0, 1.1)
+    ax.set_xticks(x, class_names, rotation=45, ha='right')
+    ax.legend(loc='upper right')
 
-        auroc_path = os.path.join(output_dir, 'auroc.png')
-        fig.tight_layout()
-        fig.savefig(auroc_path, dpi=200)
-        plt.close(fig)
-        print(f"Saved AUROC Plot to {auroc_path}")
-    else:
-        print("Skipping AUPRC/AUROC due to class mismatch in binarization.")
+    auprc_path = os.path.join(output_dir, 'auprc.png')
+    fig.tight_layout()
+    fig.savefig(auprc_path, dpi=200)
+    plt.close(fig)
+    print(f"Saved AUPRC Plot to {auprc_path}")
+
+    # === AUROC Plot ===
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(x, np.nan_to_num(auroc_scores, nan=0.0), color=colors, label='AUROC')
+
+    for bar, score in zip(bars, auroc_scores):
+        label = 'NA' if np.isnan(score) else f'{score:.2f}'
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.01,
+            label,
+            ha='center',
+            va='bottom',
+            fontsize=10
+        )
+
+    ax.axhline(y=0.5, color='black', linestyle='--', linewidth=2, label='Random Guess (0.5)')
+
+    ax.set_title(f'AUROC per Class ({model_name})')
+    ax.set_ylabel('AUROC Score')
+    ax.set_xlabel('Cell Type')
+    ax.set_ylim(0, 1.1)
+    ax.set_xticks(x, class_names, rotation=45, ha='right')
+    ax.legend(loc='upper right')
+
+    auroc_path = os.path.join(output_dir, 'auroc.png')
+    fig.tight_layout()
+    fig.savefig(auroc_path, dpi=200)
+    plt.close(fig)
+    print(f"Saved AUROC Plot to {auroc_path}")
+
+    auprc_macro = float(np.nanmean(auprc_scores)) if len(auprc_scores) else None
+    auroc_macro = float(np.nanmean(auroc_scores)) if len(auroc_scores) else None
+
+    # --- Plot 2b: ROC curve (binary only) ---
+    binary_roc_auc = None
+    roc_path = None
+    if num_classes == 2 and all_probs.shape[1] >= 2:
+        try:
+            y_true = all_labels.astype(int)
+            y_score = all_probs[:, 1]
+            fpr, tpr, _ = roc_curve(y_true, y_score)
+            auc_val = roc_auc_score(y_true, y_score)
+            binary_roc_auc = float(auc_val)
+
+            fig, ax = plt.subplots(figsize=(7, 7))
+            ax.plot(fpr, tpr, color='tab:blue', linewidth=2, label=f'AUROC = {auc_val:.3f}')
+            ax.plot([0, 1], [0, 1], color='black', linestyle='--', linewidth=1, label='Random')
+            ax.set_xlabel('False Positive Rate')
+            ax.set_ylabel('True Positive Rate')
+            ax.set_title(f'ROC Curve ({model_name})')
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.legend(loc='upper right')
+            fig.tight_layout()
+
+            roc_path = os.path.join(output_dir, 'roc_curve.png')
+            fig.savefig(roc_path, dpi=200)
+            plt.close(fig)
+            print(f"Saved ROC Curve to {roc_path}")
+        except ValueError as e:
+            print(f"Skipping ROC curve plot: {e}")
+
+    # --- Summary JSON ---
+    per_class = {
+        str(class_names[i]): {
+            'auprc': None if np.isnan(auprc_scores[i]) else float(auprc_scores[i]),
+            'auroc': None if np.isnan(auroc_scores[i]) else float(auroc_scores[i]),
+        }
+        for i in range(num_classes)
+    }
+
+    summary = {
+        'model_name': str(model_name),
+        'num_classes': int(num_classes),
+        'class_names': [str(x) for x in class_names],
+        'metrics': {
+            'accuracy': float(acc),
+            'balanced_accuracy': float(bal_acc),
+            'mcc': float(mcc),
+            'f1_macro': float(f1_macro),
+            'auprc_macro': auprc_macro,
+            'auroc_macro': auroc_macro,
+            'binary_roc_auc': binary_roc_auc,
+        },
+        'per_class': per_class,
+        'artifacts': {
+            'confusion_matrix_png': os.path.basename(cm_path),
+            'auprc_png': os.path.basename(auprc_path),
+            'auroc_png': os.path.basename(auroc_path),
+            'roc_curve_png': (os.path.basename(roc_path) if roc_path else None),
+            'feature_corr_png': ('feature_corr.png' if (model_name in {'gsvit', 'vit'} and len(all_features) > 0) else None),
+        },
+        'confusion_matrix': cm.tolist(),
+    }
+
+    summary_path = os.path.join(output_dir, 'summary.json')
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2, sort_keys=True)
+    print(f"Saved summary to {summary_path}")
 
     # --- Plot 3: Feature Correlation Heatmap (GSViT/ViT) ---
     if model_name in {'gsvit', 'vit'} and len(all_features) > 0:
